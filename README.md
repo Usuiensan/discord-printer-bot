@@ -38,7 +38,7 @@ Copy-Item .env.example .env
 - `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
 - `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
 - `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
-- `CUT_MODE`: `none`、`partial`、`full`。通常は `partial` 推奨
+- `CUT_MODE`: `none`、`partial`、`partial3`、`full`。通常は `partial` 推奨
 - `MERGE_SAME_USER_WINDOW_MS`: 同じユーザーの連投でヘッダーを省略する時間
 - `PRINT_AUTHOR_AVATAR`: 発言者アイコンを印刷するか
 - `AUTHOR_AVATAR_WIDTH_DOTS`: 発言者アイコンの印刷幅
@@ -143,7 +143,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 - `!margin 0`: 左マージン
 - `!width 384`: 印字領域幅
 - `!motion 203 203`: 基本計算ピッチ
-- `!cut partial|full|none`: その場でカット
+- `!cut partial|partial3|full|none`: その場でカット
 - `!drawer 0 80 240`: キャッシュドロアー用パルス
 - `!buzzer 1 1 3`: ブザー
 

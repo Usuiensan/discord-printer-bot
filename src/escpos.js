@@ -279,9 +279,14 @@ export class EscPosBuilder {
       return this;
     }
 
-    const cutMode = mode === 'full' ? 0x41 : 0x42;
     this.feed(3);
-    this.raw(Buffer.from([GS, 0x56, cutMode, 0]));
+    if (mode === 'full') {
+      this.raw(Buffer.from([GS, 0x56, 0x41, 0]));
+    } else if (mode === 'partial3') {
+      this.raw(Buffer.from([ESC, 0x6d]));
+    } else {
+      this.raw(Buffer.from([ESC, 0x69]));
+    }
     return this;
   }
 
