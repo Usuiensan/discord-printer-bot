@@ -64,10 +64,12 @@ function enqueuePrintJob(message, label, job) {
   console.log(`Queued ${label} print ${message.id} from ${message.author.tag}; pending=${queuedPrintCount}`);
 
   const previous = queue;
-  const run = previous.then(async () => {
-    console.log(`Starting ${label} print ${message.id}; pending=${queuedPrintCount}`);
-    await job();
-  });
+  const run = previous
+    .catch(() => {})
+    .then(async () => {
+      console.log(`Starting ${label} print ${message.id}; pending=${queuedPrintCount}`);
+      await job();
+    });
 
   queue = run
     .catch(async (error) => {

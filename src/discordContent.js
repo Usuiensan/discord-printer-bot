@@ -135,7 +135,7 @@ function applyEscPosTextCommand(printer, line) {
         return { applied: true };
       case 'align':
         requireArgs(command, args, 1);
-        printer.align(normalizeCommandName(args[0]));
+        printer.align(normalizeAlignValue(args[0]));
         return { applied: true };
       case 'bold':
         printer.bold(parseOnOff(args[0], true));
@@ -195,7 +195,7 @@ function applyEscPosTextCommand(printer, line) {
         printer.charSpacing(args[0]);
         return { applied: true };
       case 'feed':
-        printer.feed(args[0] ? positiveInt(args[0], 'feed') : 1);
+        printer.feed(args[0] ? nonNegativeInt(args[0], 'feed') : 1);
         return { applied: true };
       case 'cr':
         printer.carriageReturn();
@@ -349,10 +349,23 @@ function clampMultiplier(value) {
 
 function positiveInt(value, label) {
   const number = Number.parseInt(value, 10);
-  if (!Number.isFinite(number) || number < 0) {
+  if (!Number.isFinite(number) || number < 1) {
     throw new Error(`${label} must be a positive integer`);
   }
   return number;
+}
+
+function nonNegativeInt(value, label) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return number;
+}
+
+function normalizeAlignValue(value) {
+  const normalized = normalizeCommandName(value);
+  return normalized === 'centre' ? 'center' : normalized;
 }
 
 function normalizeCommandName(value) {

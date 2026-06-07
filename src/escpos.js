@@ -135,6 +135,7 @@ export class EscPosBuilder {
     const stops = columns
       .map((value) => clampByte(value))
       .filter((value) => value > 0)
+      .sort((a, b) => a - b)
       .slice(0, 32);
     this.raw(Buffer.from([ESC, 0x44, ...stops, 0]));
     return this;
@@ -182,7 +183,7 @@ export class EscPosBuilder {
   }
 
   relativePosition(dots = 0) {
-    const n = clampWord(dots);
+    const n = clampRelativeWord(dots);
     this.raw(Buffer.from([ESC, 0x5c, n & 0xff, (n >> 8) & 0xff]));
     return this;
   }
@@ -193,7 +194,7 @@ export class EscPosBuilder {
   }
 
   pagePrint() {
-    this.raw(Buffer.from([ESC, 0x0c]));
+    this.raw(Buffer.from([0x0c]));
     return this;
   }
 
@@ -239,7 +240,7 @@ export class EscPosBuilder {
   }
 
   pageRelativeVertical(dots = 0) {
-    const n = clampWord(dots);
+    const n = clampRelativeWord(dots);
     this.raw(Buffer.from([GS, 0x5c, n & 0xff, (n >> 8) & 0xff]));
     return this;
   }
@@ -504,6 +505,12 @@ function clampWord(value) {
   const number = Number.parseInt(value, 10);
   if (!Number.isFinite(number)) return 0;
   return Math.min(Math.max(number, 0), 65535);
+}
+
+function clampRelativeWord(value) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(Math.max(number, 0), 0x7fff);
 }
 
 function normalizeCommandName(value) {
