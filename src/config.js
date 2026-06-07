@@ -34,6 +34,8 @@ export const config = {
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
   channelId: requireEnv('DISCORD_CHANNEL_ID'),
   printerName: requireEnv('PRINTER_NAME'),
+  printRetryAttempts: intEnv('PRINT_RETRY_ATTEMPTS', 8),
+  printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
   oposStatusEnabled: boolEnv('OPOS_STATUS_ENABLED', false),
   oposLogicalName: optionalEnv('OPOS_LOGICAL_NAME', ''),
   oposClaimTimeoutMs: intEnv('OPOS_CLAIM_TIMEOUT_MS', 1000),

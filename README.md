@@ -35,6 +35,8 @@ Copy-Item .env.example .env
 - `DISCORD_CHANNEL_ID`: 印刷したいチャンネル ID
 - `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
 - `PRINTER_NAME`: Windows のプリンタ名
+- `PRINT_RETRY_ATTEMPTS`: 前ジョブ処理中など一時的なプリンタ状態での最大試行回数
+- `PRINT_RETRY_DELAY_MS`: リトライ待機時間。試行ごとに少しずつ伸びます
 - `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
 - `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
 - `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間

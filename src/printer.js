@@ -9,28 +9,48 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const RAW_PRINT_SCRIPT = join(__dirname, '..', 'tools', 'rawprint.ps1');
 const PRINTER_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'printer-status.ps1');
 const OPOS_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'opos-status.ps1');
+const RETRYABLE_PRINTER_PROBLEMS = new Set([
+  '印刷中止中',
+  '印刷ジョブ処理中',
+  'I/O待ち',
+  '使用不可'
+]);
+const HARD_PRINTER_PROBLEMS = new Set([
+  'オフライン',
+  '一時停止中',
+  '用紙不足',
+  '用紙切れ',
+  'トナー不足',
+  'トナー切れ',
+  'ドア/カバーオープン',
+  '紙詰まり',
+  'サービス要求',
+  '排紙トレイ満杯',
+  '手動給紙待ち'
+]);
 
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
-  await assertPrinterReady(printerName, options);
-
   const dir = join(os.tmpdir(), 'discord-printer-bot');
   await mkdir(dir, { recursive: true });
   const filePath = join(dir, `${randomUUID()}.bin`);
   await writeFile(filePath, bytes);
 
   try {
-    await runPowerShell([
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      RAW_PRINT_SCRIPT,
-      '-PrinterName',
-      printerName,
-      '-Path',
-      filePath,
-      '-DocumentName',
-      'Discord message'
-    ]);
+    await retryPrintOperation(async () => {
+      await assertPrinterReady(printerName, options);
+      await runPowerShell([
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        RAW_PRINT_SCRIPT,
+        '-PrinterName',
+        printerName,
+        '-Path',
+        filePath,
+        '-DocumentName',
+        'Discord message'
+      ]);
+    }, options);
   } finally {
     await rm(filePath, { force: true });
   }
@@ -60,8 +80,59 @@ export async function assertPrinterReady(printerName, options = {}) {
 
   const problems = describePrinterProblems(status);
   if (problems.length > 0) {
-    throw new Error(`プリンタエラー: ${problems.join(' / ')}`);
+    throw printerStatusError('プリンタエラー', problems);
   }
+}
+
+async function retryPrintOperation(operation, options) {
+  const attempts = Math.max(1, Number.parseInt(options.printRetryAttempts ?? 8, 10) || 8);
+  const delayMs = Math.max(100, Number.parseInt(options.printRetryDelayMs ?? 1500, 10) || 1500);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isRetryablePrintError(error) || attempt >= attempts) {
+        throw error;
+      }
+
+      const waitMs = delayMs * attempt;
+      console.warn(`Printer busy or not ready; retrying ${attempt}/${attempts - 1} in ${waitMs}ms: ${error.message}`);
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function printerStatusError(prefix, problems) {
+  const error = new Error(`${prefix}: ${problems.join(' / ')}`);
+  error.printerProblems = problems;
+  error.retryable = problems.some((problem) => RETRYABLE_PRINTER_PROBLEMS.has(problem))
+    && !problems.some((problem) => HARD_PRINTER_PROBLEMS.has(problem));
+  return error;
+}
+
+function isRetryablePrintError(error) {
+  if (error?.retryable) return true;
+  const message = String(error?.message ?? error);
+  return [
+    '印刷中止中',
+    '印刷ジョブ処理中',
+    'I/O待ち',
+    '使用不可',
+    'The printer is busy',
+    'プリンターはビジー',
+    '別のプロセス'
+  ].some((pattern) => message.includes(pattern));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function getOposStatus(logicalName, claimTimeoutMs = 1000) {
