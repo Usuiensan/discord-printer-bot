@@ -68,6 +68,14 @@ function printTextBlock(printer, text, warnings) {
 
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
+    const controlResult = applyEscPosTextCommand(printer, rawLine);
+    if (controlResult.applied) continue;
+    if (controlResult.error) {
+      printTextLine(printer, `[ESC/POSコマンドエラー: ${controlResult.error}]`, warnings);
+      warnings.push(`ESC/POSコマンドエラー: ${controlResult.error}`);
+      continue;
+    }
+
     let size = 1;
     let isSmall = false;
     let textToPrint = rawLine;
@@ -93,7 +101,7 @@ function printTextBlock(printer, text, warnings) {
       printer.smallText(true);
     }
     for (const line of wrapText(textToPrint, maxCols)) {
-      printTextLine(printer, line, warnings);
+      printStyledTextLine(printer, line, warnings);
     }
     if (size > 1) {
       printer.size(1, 1);
@@ -105,9 +113,305 @@ function printTextBlock(printer, text, warnings) {
   printer.feed(1);
 }
 
+function applyEscPosTextCommand(printer, line) {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^!(?:escpos\s+)?([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+(.*))?$/);
+  if (!match) return { applied: false };
+
+  const command = normalizeCommandName(match[1]);
+  const args = splitCommandArgs(match[2] ?? '');
+
+  try {
+    switch (command) {
+      case 'left':
+        printer.align('left');
+        return { applied: true };
+      case 'center':
+      case 'centre':
+        printer.align('center');
+        return { applied: true };
+      case 'right':
+        printer.align('right');
+        return { applied: true };
+      case 'align':
+        requireArgs(command, args, 1);
+        printer.align(normalizeCommandName(args[0]));
+        return { applied: true };
+      case 'bold':
+        printer.bold(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'doublestrike':
+      case 'double_strike':
+        printer.doubleStrike(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'underline':
+        printer.underline(args[0] === '2' || normalizeCommandName(args[0]) === 'thick' ? 2 : parseOnOff(args[0], true));
+        return { applied: true };
+      case 'invert':
+      case 'reverse':
+        printer.invert(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'upsidedown':
+      case 'upside_down':
+        printer.upsideDown(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'rotate':
+      case 'rotate90':
+        printer.rotate90(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'font':
+        requireArgs(command, args, 1);
+        printer.font(args[0]);
+        return { applied: true };
+      case 'smoothing':
+      case 'smooth':
+        printer.smoothing(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'printmode':
+      case 'print_mode':
+        printer.printMode(parsePrintModeArgs(args));
+        return { applied: true };
+      case 'small':
+        printer.smallText(parseOnOff(args[0], true));
+        return { applied: true };
+      case 'size':
+        requireArgs(command, args, 2);
+        printer.size(clampMultiplier(args[0]), clampMultiplier(args[1]));
+        return { applied: true };
+      case 'normal':
+        printer.bold(false).underline(false).invert(false).rotate90(false).upsideDown(false).smallText(false).size(1, 1).align('left');
+        return { applied: true };
+      case 'reset':
+        printer.initialize();
+        return { applied: true };
+      case 'linespacing':
+      case 'line_spacing':
+        requireArgs(command, args, 1);
+        printer.lineSpacing(normalizeCommandName(args[0]) === 'default' ? 'default' : args[0]);
+        return { applied: true };
+      case 'charspacing':
+      case 'char_spacing':
+        requireArgs(command, args, 1);
+        printer.charSpacing(args[0]);
+        return { applied: true };
+      case 'feed':
+        printer.feed(args[0] ? positiveInt(args[0], 'feed') : 1);
+        return { applied: true };
+      case 'cr':
+        printer.carriageReturn();
+        return { applied: true };
+      case 'tab':
+      case 'ht':
+        printer.tab();
+        return { applied: true };
+      case 'tabs':
+      case 'tabstops':
+      case 'tab_stops':
+        requireArgs(command, args, 1);
+        printer.tabStops(args);
+        return { applied: true };
+      case 'feeddots':
+      case 'feed_dots':
+        requireArgs(command, args, 1);
+        printer.feedDots(args[0]);
+        return { applied: true };
+      case 'position':
+      case 'pos':
+        requireArgs(command, args, 1);
+        printer.absolutePosition(args[0]);
+        return { applied: true };
+      case 'relative':
+      case 'rel':
+        requireArgs(command, args, 1);
+        printer.relativePosition(args[0]);
+        return { applied: true };
+      case 'margin':
+      case 'leftmargin':
+      case 'left_margin':
+        requireArgs(command, args, 1);
+        printer.leftMargin(args[0]);
+        return { applied: true };
+      case 'width':
+      case 'areawidth':
+      case 'area_width':
+        requireArgs(command, args, 1);
+        printer.printAreaWidth(args[0]);
+        return { applied: true };
+      case 'motion':
+      case 'motionunits':
+      case 'motion_units':
+        requireArgs(command, args, 2);
+        printer.motionUnits(args[0], args[1]);
+        return { applied: true };
+      case 'cut':
+        printer.cut(normalizeCommandName(args[0] ?? 'partial'));
+        return { applied: true };
+      case 'drawer':
+      case 'pulse':
+        printer.drawerPulse(args[0] ?? 0, args[1] ?? 80, args[2] ?? 240);
+        return { applied: true };
+      case 'buzzer':
+      case 'beep':
+        printer.buzzer(args[0] ?? 1, args[1] ?? 1, args[2] ?? 3);
+        return { applied: true };
+      case 'page':
+      case 'pagemode':
+      case 'page_mode':
+        applyPageCommand(printer, command, args);
+        return { applied: true };
+      default:
+        return { applied: false };
+    }
+  } catch (error) {
+    return { applied: false, error: error.message };
+  }
+}
+
+function applyPageCommand(printer, command, args) {
+  requireArgs(command, args, 1);
+  const subCommand = normalizeCommandName(args[0]);
+  if (subCommand === 'begin' || subCommand === 'on') {
+    printer.pageMode(true);
+    return;
+  }
+  if (subCommand === 'end' || subCommand === 'off' || subCommand === 'standard') {
+    printer.pageMode(false);
+    return;
+  }
+  if (subCommand === 'print') {
+    printer.pagePrint();
+    return;
+  }
+  if (subCommand === 'cancel') {
+    printer.pageCancel();
+    return;
+  }
+  if (subCommand === 'direction' || subCommand === 'dir') {
+    requireArgs('page direction', args, 2);
+    printer.pageDirection(args[1]);
+    return;
+  }
+  if (subCommand === 'area') {
+    requireArgs('page area', args, 5);
+    printer.pageArea(args[1], args[2], args[3], args[4]);
+    return;
+  }
+  if (subCommand === 'position' || subCommand === 'pos') {
+    requireArgs('page position', args, 3);
+    printer.pagePosition(args[1], args[2]);
+    return;
+  }
+  if (subCommand === 'relative' || subCommand === 'rel') {
+    requireArgs('page relative', args, 2);
+    printer.pageRelativeVertical(args[1]);
+    return;
+  }
+
+  throw new Error(`unknown page subcommand: ${args[0]}`);
+}
+
+function splitCommandArgs(value) {
+  return value.trim() ? value.trim().split(/\s+/) : [];
+}
+
+function parseOnOff(value, fallback) {
+  if (value === undefined) return fallback;
+  const normalized = normalizeCommandName(value);
+  if (['on', 'true', 'yes', '1'].includes(normalized)) return true;
+  if (['off', 'false', 'no', '0'].includes(normalized)) return false;
+  throw new Error(`expected on/off, got: ${value}`);
+}
+
+function parsePrintModeArgs(args) {
+  const mode = {};
+  for (const arg of args) {
+    const [key, rawValue = 'on'] = arg.split('=');
+    const name = normalizeCommandName(key);
+    if (name === 'font') mode.font = rawValue;
+    if (name === 'bold') mode.bold = parseOnOff(rawValue, true);
+    if (name === 'doubleheight' || name === 'double_height') mode.doubleHeight = parseOnOff(rawValue, true);
+    if (name === 'doublewidth' || name === 'double_width') mode.doubleWidth = parseOnOff(rawValue, true);
+    if (name === 'underline') mode.underline = parseOnOff(rawValue, true);
+  }
+  return mode;
+}
+
+function requireArgs(command, args, count) {
+  if (args.length < count) {
+    throw new Error(`${command} needs ${count} argument(s)`);
+  }
+}
+
+function clampMultiplier(value) {
+  const number = positiveInt(value, 'size');
+  return Math.min(Math.max(number, 1), 8);
+}
+
+function positiveInt(value, label) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return number;
+}
+
+function normalizeCommandName(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+}
+
 function printTextLine(printer, line, warnings) {
   recordUnsupportedChars(line, warnings);
   printer.line(line);
+}
+
+function printStyledTextLine(printer, line, warnings) {
+  const tokens = parseDiscordStyleTokens(line);
+  for (const token of tokens) {
+    if (token.bold) printer.bold(true);
+    if (token.underline) printer.underline(true);
+    printTextInline(printer, token.text, warnings);
+    if (token.underline) printer.underline(false);
+    if (token.bold) printer.bold(false);
+  }
+  printer.feed(1);
+}
+
+function printTextInline(printer, text, warnings) {
+  recordUnsupportedChars(text, warnings);
+  printer.text(text);
+}
+
+function parseDiscordStyleTokens(line) {
+  const tokens = [];
+  let index = 0;
+  let plain = '';
+  const state = { bold: false, underline: false };
+
+  const flush = () => {
+    if (!plain) return;
+    tokens.push({ text: plain, ...state });
+    plain = '';
+  };
+
+  while (index < line.length) {
+    if (line.startsWith('**', index)) {
+      flush();
+      state.bold = !state.bold;
+      index += 2;
+      continue;
+    }
+    if (line.startsWith('__', index)) {
+      flush();
+      state.underline = !state.underline;
+      index += 2;
+      continue;
+    }
+    plain += line[index];
+    index += 1;
+  }
+
+  flush();
+  return tokens.length > 0 ? tokens : [{ text: line, bold: false, underline: false }];
 }
 
 async function printImageItems(printer, imageItems, config, warnings) {

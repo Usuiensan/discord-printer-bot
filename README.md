@@ -100,6 +100,70 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 
 対応種別: UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
 
+## 本文内 ESC/POS 制御コマンド
+
+印刷本文の行頭に制御コマンドを書くと、その行は印字せず、後続の印刷設定を変更します。短縮形または `!escpos` 付きで使えます。
+
+```text
+!center
+中央揃えの文字
+!right
+右揃えの文字
+!left
+左揃えに戻す
+```
+
+よく使うコマンド:
+
+- `!left` / `!center` / `!right`: 揃え位置
+- `!align left|center|right`: 揃え位置
+- `!bold on|off`: 太字
+- `**太字**`: Discord の太字をプリンタ太字で印刷
+- `!underline on|off|2`: 下線。`2` は太線
+- `__下線__`: Discord の下線をプリンタ下線で印刷
+- `!doublestrike on|off`: 二重印字
+- `!invert on|off`: 白黒反転
+- `!rotate on|off`: 90度回転
+- `!upsidedown on|off`: 倒立印字
+- `!font a|b`: 内蔵フォント切り替え
+- `!smoothing on|off`: スムージング
+- `!printmode font=a bold=on double-width=on double-height=off underline=off`: 印字モード一括指定
+- `!small on|off`: 小さいフォント
+- `!size 1-8 1-8`: 横倍率・縦倍率
+- `!normal`: 太字、下線、反転、回転、倍率、揃えを標準へ戻す
+- `!reset`: プリンタ初期化
+- `!linespacing 24` / `!linespacing default`: 行間
+- `!charspacing 0`: 文字間隔
+- `!tab`: 水平タブ
+- `!tabs 8 16 24`: タブ位置
+- `!feed 3`: 改行
+- `!feeddots 48`: ドット単位紙送り
+- `!position 120`: 横方向の絶対位置
+- `!relative 24`: 横方向の相対移動
+- `!margin 0`: 左マージン
+- `!width 384`: 印字領域幅
+- `!motion 203 203`: 基本計算ピッチ
+- `!cut partial|full|none`: その場でカット
+- `!drawer 0 80 240`: キャッシュドロアー用パルス
+- `!buzzer 1 1 3`: ブザー
+
+ページモード:
+
+```text
+!page begin
+!page area 0 0 384 300
+!page direction left-to-right
+!page position 20 40
+!page relative 24
+ページモード内の文字
+!page print
+!page end
+```
+
+ページモードは機種・ドライバー・現在の状態により無視される命令があります。通常のレシート印字では `!left`、`!center`、`!right`、`!bold`、`!size`、`!cut` から使うのがおすすめです。
+
+Discord からは、電源オフ、バッファクリア、NVメモリー書き込み/消去、メモリースイッチ変更、通信条件変更、リアルタイムステータス要求など、プリンタ設定や永続メモリーに影響する命令は実装しません。
+
 ## Windows 起動時に非表示で常駐
 
 ログオン時に bot を非表示で起動するタスクを登録できます。
