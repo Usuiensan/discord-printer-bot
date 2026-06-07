@@ -8,9 +8,10 @@ import os from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RAW_PRINT_SCRIPT = join(__dirname, '..', 'tools', 'rawprint.ps1');
 const PRINTER_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'printer-status.ps1');
+const OPOS_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'opos-status.ps1');
 
-export async function sendRawToPrinter(bytes, printerName) {
-  await assertPrinterReady(printerName);
+export async function sendRawToPrinter(bytes, printerName, options = {}) {
+  await assertPrinterReady(printerName, options);
 
   const dir = join(os.tmpdir(), 'discord-printer-bot');
   await mkdir(dir, { recursive: true });
@@ -19,7 +20,6 @@ export async function sendRawToPrinter(bytes, printerName) {
 
   try {
     await runPowerShell([
-      '-NoProfile',
       '-ExecutionPolicy',
       'Bypass',
       '-File',
@@ -36,7 +36,20 @@ export async function sendRawToPrinter(bytes, printerName) {
   }
 }
 
-export async function assertPrinterReady(printerName) {
+export async function assertPrinterReady(printerName, options = {}) {
+  if (options.oposStatusEnabled && options.oposLogicalName) {
+    try {
+      const oposStatus = await getOposStatus(options.oposLogicalName, options.oposClaimTimeoutMs);
+      const oposProblems = describeOposProblems(oposStatus);
+      if (oposProblems.length > 0) {
+        throw new Error(`プリンタエラー(OPOS): ${oposProblems.join(' / ')}`);
+      }
+      return;
+    } catch (error) {
+      console.warn(`OPOS printer status check failed: ${error.message}`);
+    }
+  }
+
   let status;
   try {
     status = await getPrinterStatus(printerName);
@@ -51,9 +64,43 @@ export async function assertPrinterReady(printerName) {
   }
 }
 
+async function getOposStatus(logicalName, claimTimeoutMs = 1000) {
+  const stdout = await runWindowsPowerShell([
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    OPOS_STATUS_SCRIPT,
+    '-LogicalName',
+    logicalName,
+    '-ClaimTimeoutMs',
+    String(claimTimeoutMs)
+  ]);
+
+  return JSON.parse(stdout);
+}
+
+function describeOposProblems(status) {
+  const problems = [];
+
+  if (status.CoverOpen === true) problems.push('カバーオープン');
+  if (status.RecEmpty === true) problems.push('レシート用紙切れ');
+  if (status.RecNearEnd === true) problems.push('レシート用紙残量少');
+
+  const state = String(status.State ?? '');
+  if (state && !['Idle', 'OK', 'Normal'].includes(state)) {
+    problems.push(`状態=${state}`);
+  }
+
+  const health = String(status.CheckHealthText ?? '');
+  if (/cover\s*open|カバー.*(開|オープン)/i.test(health)) problems.push('カバーオープン');
+  if (/paper\s*(empty|end)|用紙.*(切|なし|ありません)/i.test(health)) problems.push('用紙切れ');
+  if (/offline|オフライン/i.test(health)) problems.push('オフライン');
+
+  return Array.from(new Set(problems));
+}
+
 async function getPrinterStatus(printerName) {
   const stdout = await runPowerShell([
-    '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
     '-File',
@@ -75,7 +122,8 @@ function describePrinterProblems(status) {
   if (status.WorkOffline) problems.push('オフライン');
   if (status.Paused) problems.push('一時停止中');
 
-  if (printerStatus && !['Normal', 'Idle', 'Printing', 'Processing', 'WarmingUp'].includes(printerStatus)) {
+  const okPrinterStatuses = new Set(['Normal', 'Idle', 'Printing', 'Processing', 'WarmingUp', '3', '4', '5']);
+  if (printerStatus && !okPrinterStatuses.has(printerStatus)) {
     problems.push(`状態=${printerStatus}`);
   }
 
@@ -125,8 +173,21 @@ function describePrinterProblems(status) {
 }
 
 function runPowerShell(args) {
+  const candidates = process.env.POWERSHELL_EXE?.trim()
+    ? [process.env.POWERSHELL_EXE.trim()]
+    : ['pwsh.exe', 'powershell.exe'];
+
+  return runPowerShellCandidate(candidates, args);
+}
+
+function runWindowsPowerShell(args) {
+  return runPowerShellCandidate(['powershell.exe'], args);
+}
+
+function runPowerShellCandidate(candidates, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', args, {
+    const executable = candidates[0];
+    const child = spawn(executable, wrapPowerShellArgs(args), {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -139,13 +200,119 @@ function runPowerShell(args) {
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      if (error.code === 'ENOENT' && candidates.length > 1) {
+        runPowerShellCandidate(candidates.slice(1), args).then(resolve, reject);
+        return;
+      }
+      reject(error);
+    });
     child.on('close', (code) => {
       if (code === 0) {
         resolve(stdout);
       } else {
-        reject(new Error(`PowerShell exited with ${code}: ${stderr || stdout}`));
+        reject(new Error(`${executable} exited with ${code}: ${cleanPowerShellError(stderr || stdout)}`));
       }
     });
   });
+}
+
+function wrapPowerShellArgs(args) {
+  const commandArgs = stripPowerShellHostArgs(args);
+  const command = [
+    '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new()',
+    'if ([Console].GetProperty("ErrorEncoding")) { [Console]::ErrorEncoding=[System.Text.UTF8Encoding]::new() }',
+    '$OutputEncoding=[System.Text.UTF8Encoding]::new()',
+    `& ${commandArgs.map(quotePowerShellArg).join(' ')}`
+  ].join('; ');
+
+  return [
+      '-NoLogo',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      Buffer.from(command, 'utf16le').toString('base64')
+    ];
+}
+
+function stripPowerShellHostArgs(args) {
+  const stripped = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-ExecutionPolicy') {
+      index += 1;
+      continue;
+    }
+    if (arg === '-File') {
+      continue;
+    }
+    stripped.push(arg);
+  }
+  return stripped;
+}
+
+function quotePowerShellArg(value) {
+  if (/^-[A-Za-z][A-Za-z0-9]*$/.test(String(value))) {
+    return String(value);
+  }
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function cleanPowerShellError(value) {
+  const cleaned = String(value)
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\r/g, '')
+    .trim();
+
+  if (cleaned.includes('#< CLIXML')) {
+    return cleanPowerShellCliXml(cleaned);
+  }
+
+  return cleaned;
+}
+
+function cleanPowerShellCliXml(value) {
+  const entries = [];
+  const textNodePattern = /<(S|AV)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g;
+
+  for (const match of value.matchAll(textNodePattern)) {
+    const text = decodePowerShellXmlText(match[2])
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .replace(/\r/g, '')
+      .trim();
+    if (text) entries.push(text);
+  }
+
+  const usefulEntries = entries.filter((entry) => (
+    !entry.includes('モジュールを初めて使用するための準備') &&
+    !entry.startsWith('発生場所 ') &&
+    !entry.startsWith('At ') &&
+    !entry.startsWith('+ ') &&
+    !/^~+$/.test(entry) &&
+    !entry.includes('CategoryInfo') &&
+    !entry.includes('FullyQualifiedErrorId')
+  ));
+
+  const uniqueEntries = [];
+  for (const entry of usefulEntries.length > 0 ? usefulEntries : entries) {
+    if (uniqueEntries.includes(entry)) continue;
+    if (uniqueEntries.some((existing) => existing.endsWith(entry))) continue;
+    uniqueEntries.push(entry);
+  }
+
+  return uniqueEntries.slice(0, 6).join('\n') || value;
+}
+
+function decodePowerShellXmlText(value) {
+  return value
+    .replace(/_x000D__x000A_/g, '\n')
+    .replace(/_x000D_/g, '\r')
+    .replace(/_x000A_/g, '\n')
+    .replace(/_x001B_/g, '\x1b')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
 }

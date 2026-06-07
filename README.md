@@ -35,6 +35,9 @@ Copy-Item .env.example .env
 - `DISCORD_CHANNEL_ID`: 印刷したいチャンネル ID
 - `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
 - `PRINTER_NAME`: Windows のプリンタ名
+- `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
+- `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
+- `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
 - `CUT_MODE`: `none`、`partial`、`full`。通常は `partial` 推奨
 - `MERGE_SAME_USER_WINDOW_MS`: 同じユーザーの連投でヘッダーを省略する時間
 - `PRINT_AUTHOR_AVATAR`: 発言者アイコンを印刷するか
@@ -67,6 +70,21 @@ Get-Printer | Select-Object Name
 
 ```powershell
 npm start
+```
+
+## OPOS ADK for .NET 状態確認
+
+紙切れやカバーオープンをより確実に検出したい場合は、EPSON OPOS ADK for .NET をインストールし、SetupPOS で TM-T70II を登録してください。登録した論理デバイス名を `.env` に設定します。
+
+```env
+OPOS_STATUS_ENABLED=true
+OPOS_LOGICAL_NAME=TM-T70II
+```
+
+単体確認:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -LogicalName "TM-T70II"
 ```
 
 ## コード印刷コマンド

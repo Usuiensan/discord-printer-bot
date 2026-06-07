@@ -23,7 +23,7 @@ function enqueuePrint(message) {
       const { bytes, warnings } = await buildPrintJob(message, config, {
         printHeader: !omitHeader
       });
-      await sendRawToPrinter(bytes, config.printerName);
+      await sendRawToPrinter(bytes, config.printerName, config);
       lastPrintedMessage = {
         authorId: message.author.id,
         createdTimestamp: message.createdTimestamp
@@ -59,7 +59,7 @@ function enqueueSymbolMessagePrint(message, command) {
       requestedBy: message.author.tag
     }, config);
 
-    await sendRawToPrinter(bytes, config.printerName);
+    await sendRawToPrinter(bytes, config.printerName, config);
     console.log(`Printed code requested by message ${message.id} from ${message.author.tag}`);
   });
 
@@ -135,6 +135,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   console.log(`Watching channel ${config.channelId}`);
   console.log(`Printer: ${config.printerName}`);
+  console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
 });
 
 client.on(Events.MessageCreate, async (message) => {
