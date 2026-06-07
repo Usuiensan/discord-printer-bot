@@ -43,8 +43,69 @@ export class EscPosBuilder {
     return this;
   }
 
+  initialize() {
+    this.raw(Buffer.from([ESC, 0x40]));
+    this.raw(Buffer.from([ESC, 0x33, 24]));
+    this.enableJapaneseMode();
+    return this;
+  }
+
   bold(enabled) {
     this.raw(Buffer.from([ESC, 0x45, enabled ? 1 : 0]));
+    return this;
+  }
+
+  doubleStrike(enabled) {
+    this.raw(Buffer.from([ESC, 0x47, enabled ? 1 : 0]));
+    return this;
+  }
+
+  underline(value) {
+    const n = value === 2 || value === '2' || value === 'thick' ? 2 : value ? 1 : 0;
+    this.raw(Buffer.from([ESC, 0x2d, n]));
+    this.raw(Buffer.from([FS, 0x2d, n]));
+    return this;
+  }
+
+  invert(enabled) {
+    this.raw(Buffer.from([GS, 0x42, enabled ? 1 : 0]));
+    return this;
+  }
+
+  upsideDown(enabled) {
+    this.raw(Buffer.from([ESC, 0x7b, enabled ? 1 : 0]));
+    return this;
+  }
+
+  rotate90(enabled) {
+    this.raw(Buffer.from([ESC, 0x56, enabled ? 1 : 0]));
+    return this;
+  }
+
+  font(value) {
+    const font = String(value).toLowerCase() === 'b' ? 1 : 0;
+    this.raw(Buffer.from([ESC, 0x4d, font]));
+    return this;
+  }
+
+  smoothing(enabled) {
+    this.raw(Buffer.from([GS, 0x62, enabled ? 1 : 0]));
+    return this;
+  }
+
+  printMode({
+    font = 'a',
+    bold = false,
+    doubleHeight = false,
+    doubleWidth = false,
+    underline = false
+  } = {}) {
+    const n = (String(font).toLowerCase() === 'b' ? 1 : 0)
+      | (bold ? 0x08 : 0)
+      | (doubleHeight ? 0x10 : 0)
+      | (doubleWidth ? 0x20 : 0)
+      | (underline ? 0x80 : 0);
+    this.raw(Buffer.from([ESC, 0x21, n]));
     return this;
   }
 
@@ -60,6 +121,25 @@ export class EscPosBuilder {
     return this;
   }
 
+  carriageReturn() {
+    this.raw(Buffer.from([0x0d]));
+    return this;
+  }
+
+  tab() {
+    this.raw(Buffer.from([0x09]));
+    return this;
+  }
+
+  tabStops(columns = []) {
+    const stops = columns
+      .map((value) => clampByte(value))
+      .filter((value) => value > 0)
+      .slice(0, 32);
+    this.raw(Buffer.from([ESC, 0x44, ...stops, 0]));
+    return this;
+  }
+
   size(widthMult, heightMult) {
     const n = ((widthMult - 1) << 4) | (heightMult - 1);
     this.raw(Buffer.from([GS, 0x21, n]));
@@ -71,8 +151,124 @@ export class EscPosBuilder {
     return this;
   }
 
+  lineSpacing(dots) {
+    if (dots === 'default') {
+      this.raw(Buffer.from([ESC, 0x32]));
+      return this;
+    }
+    this.raw(Buffer.from([ESC, 0x33, clampByte(dots)]));
+    return this;
+  }
+
+  charSpacing(dots) {
+    this.raw(Buffer.from([ESC, 0x20, clampByte(dots)]));
+    return this;
+  }
+
   feed(lines = 1) {
     this.raw(Buffer.alloc(Math.max(0, lines), LF));
+    return this;
+  }
+
+  feedDots(dots = 0) {
+    this.raw(Buffer.from([ESC, 0x4a, clampByte(dots)]));
+    return this;
+  }
+
+  absolutePosition(dots = 0) {
+    const n = clampWord(dots);
+    this.raw(Buffer.from([ESC, 0x24, n & 0xff, (n >> 8) & 0xff]));
+    return this;
+  }
+
+  relativePosition(dots = 0) {
+    const n = clampWord(dots);
+    this.raw(Buffer.from([ESC, 0x5c, n & 0xff, (n >> 8) & 0xff]));
+    return this;
+  }
+
+  pageMode(enabled) {
+    this.raw(Buffer.from([ESC, enabled ? 0x4c : 0x53]));
+    return this;
+  }
+
+  pagePrint() {
+    this.raw(Buffer.from([ESC, 0x0c]));
+    return this;
+  }
+
+  pageCancel() {
+    this.raw(Buffer.from([CAN]));
+    return this;
+  }
+
+  pageDirection(value) {
+    const map = {
+      left_to_right: 0,
+      bottom_to_top: 1,
+      right_to_left: 2,
+      top_to_bottom: 3
+    };
+    this.raw(Buffer.from([ESC, 0x54, map[normalizeCommandName(value)] ?? 0]));
+    return this;
+  }
+
+  pageArea(x, y, width, height) {
+    const values = [x, y, width, height].map(clampWord);
+    this.raw(Buffer.from([
+      ESC,
+      0x57,
+      values[0] & 0xff,
+      (values[0] >> 8) & 0xff,
+      values[1] & 0xff,
+      (values[1] >> 8) & 0xff,
+      values[2] & 0xff,
+      (values[2] >> 8) & 0xff,
+      values[3] & 0xff,
+      (values[3] >> 8) & 0xff
+    ]));
+    return this;
+  }
+
+  pagePosition(x, y) {
+    const horizontal = clampWord(x);
+    const vertical = clampWord(y);
+    this.raw(Buffer.from([ESC, 0x24, horizontal & 0xff, (horizontal >> 8) & 0xff]));
+    this.raw(Buffer.from([GS, 0x24, vertical & 0xff, (vertical >> 8) & 0xff]));
+    return this;
+  }
+
+  pageRelativeVertical(dots = 0) {
+    const n = clampWord(dots);
+    this.raw(Buffer.from([GS, 0x5c, n & 0xff, (n >> 8) & 0xff]));
+    return this;
+  }
+
+  leftMargin(dots = 0) {
+    const n = clampWord(dots);
+    this.raw(Buffer.from([GS, 0x4c, n & 0xff, (n >> 8) & 0xff]));
+    return this;
+  }
+
+  printAreaWidth(dots = this.widthDots) {
+    const n = clampWord(dots);
+    this.raw(Buffer.from([GS, 0x57, n & 0xff, (n >> 8) & 0xff]));
+    return this;
+  }
+
+  motionUnits(x = 203, y = 203) {
+    this.raw(Buffer.from([GS, 0x50, clampByte(x), clampByte(y)]));
+    return this;
+  }
+
+  drawerPulse(pin = 0, onTime = 80, offTime = 240) {
+    const m = Number(pin) === 1 ? 1 : 0;
+    this.raw(Buffer.from([ESC, 0x70, m, clampByte(Math.round(onTime / 2)), clampByte(Math.round(offTime / 2))]));
+    return this;
+  }
+
+  buzzer(pattern = 1, repeat = 1, cycle = 3) {
+    this.raw(Buffer.from([ESC, 0x28, 0x41, 0x04, 0x00, 48, clampByte(pattern), clampByte(repeat), clampByte(cycle)]));
     return this;
   }
 
@@ -294,6 +490,24 @@ export class EscPosBuilder {
   build() {
     return Buffer.concat(this.parts);
   }
+}
+
+const CAN = 0x18;
+
+function clampByte(value) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(Math.max(number, 0), 255);
+}
+
+function clampWord(value) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(Math.max(number, 0), 65535);
+}
+
+function normalizeCommandName(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
 }
 
 export function normalizePrinterText(value) {

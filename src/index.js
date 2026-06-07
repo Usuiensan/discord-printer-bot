@@ -14,34 +14,28 @@ const client = new Client({
 });
 
 let queue = Promise.resolve();
+let queuedPrintCount = 0;
 let lastPrintedMessage = null;
 
 function enqueuePrint(message) {
-  queue = queue
-    .then(async () => {
-      const omitHeader = shouldOmitHeader(message);
-      const { bytes, warnings } = await buildPrintJob(message, config, {
-        printHeader: !omitHeader
-      });
-      await sendRawToPrinter(bytes, config.printerName, config);
-      lastPrintedMessage = {
-        authorId: message.author.id,
-        createdTimestamp: message.createdTimestamp
-      };
-      if (warnings.length > 0) {
-        await markPrintWarning(message, warnings);
-        console.log(`Printed message ${message.id} from ${message.author.tag} with ${warnings.length} warning(s)`);
-      } else {
-        await markPrintSuccess(message);
-        console.log(`Printed message ${message.id} from ${message.author.tag}`);
-      }
-    })
-    .catch(async (error) => {
-      console.error('Print failed:', error);
-      await markPrintFailure(message, error.message).catch((reactionError) => {
-        console.error('Failed to report print failure:', reactionError);
-      });
+  enqueuePrintJob(message, 'message', async () => {
+    const omitHeader = shouldOmitHeader(message);
+    const { bytes, warnings } = await buildPrintJob(message, config, {
+      printHeader: !omitHeader
     });
+    await sendRawToPrinter(bytes, config.printerName, config);
+    lastPrintedMessage = {
+      authorId: message.author.id,
+      createdTimestamp: message.createdTimestamp
+    };
+    if (warnings.length > 0) {
+      await markPrintWarning(message, warnings);
+      console.log(`Printed message ${message.id} from ${message.author.tag} with ${warnings.length} warning(s)`);
+    } else {
+      await markPrintSuccess(message);
+      console.log(`Printed message ${message.id} from ${message.author.tag}`);
+    }
+  });
 }
 
 function shouldOmitHeader(message) {
@@ -53,7 +47,7 @@ function shouldOmitHeader(message) {
 }
 
 function enqueueSymbolMessagePrint(message, command) {
-  const job = queue.then(async () => {
+  return enqueuePrintJob(message, 'code', async () => {
     const bytes = buildSymbolPrintJob({
       ...command,
       requestedBy: message.author.tag
@@ -61,13 +55,33 @@ function enqueueSymbolMessagePrint(message, command) {
 
     await sendRawToPrinter(bytes, config.printerName, config);
     console.log(`Printed code requested by message ${message.id} from ${message.author.tag}`);
+    await markPrintSuccess(message);
+  });
+}
+
+function enqueuePrintJob(message, label, job) {
+  queuedPrintCount += 1;
+  console.log(`Queued ${label} print ${message.id} from ${message.author.tag}; pending=${queuedPrintCount}`);
+
+  const previous = queue;
+  const run = previous.then(async () => {
+    console.log(`Starting ${label} print ${message.id}; pending=${queuedPrintCount}`);
+    await job();
   });
 
-  queue = job.catch((error) => {
-    console.error('Message code print failed:', error);
-  });
+  queue = run
+    .catch(async (error) => {
+      console.error(`${label} print failed:`, error);
+      await markPrintFailure(message, error.message).catch((reactionError) => {
+        console.error('Failed to report print failure:', reactionError);
+      });
+    })
+    .finally(() => {
+      queuedPrintCount = Math.max(0, queuedPrintCount - 1);
+      console.log(`Finished ${label} print ${message.id}; pending=${queuedPrintCount}`);
+    });
 
-  return job;
+  return run;
 }
 
 async function markPrintSuccess(message) {
@@ -149,10 +163,8 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     const command = parseSymbolMessageCommand(message.content ?? '', config.messageCommandPrefix);
     if (command) {
+      enqueueSymbolMessagePrint(message, command);
       await addReaction(message, '🧾');
-      enqueueSymbolMessagePrint(message, command)
-        .then(() => markPrintSuccess(message))
-        .catch((error) => markPrintFailure(message, error.message));
       return;
     }
   } catch (error) {
