@@ -1,0 +1,118 @@
+# Discord Printer Bot for Epson TM-T70II 58mm
+
+Discord の指定チャンネルに投稿された内容を、USB 接続された Epson TM-T70II 58mm 幅プリンタへ即時印刷する bot です。
+
+## できること
+
+- 指定 Discord チャンネルの新規メッセージを監視
+- メッセージ本文を ESC/POS のプリンタ内蔵フォントで印刷
+- 発言したユーザーのアイコンをディザ処理した疑似グレースケール画像として印刷
+- URL を本文として印刷し、プリンタ内蔵機能で QR コードとしても印刷
+- 通常メッセージコマンドから対応バーコード/二次元コードを印刷
+- カスタム絵文字、Unicode 絵文字、スタンプ、添付画像をディザ処理した疑似グレースケール画像として印刷
+- Windows に登録されたプリンタキューへ RAW ESC/POS データを送信
+
+## 前提
+
+- Windows PC
+- Node.js 20 以上
+- Epson TM-T70II が USB 接続され、Windows の「プリンターとスキャナー」に登録済み
+- Discord Developer Portal で作成した bot
+- bot の `MESSAGE CONTENT INTENT` が有効
+
+## セットアップ
+
+```powershell
+npm install
+Copy-Item .env.example .env
+```
+
+もし `npm install` で `Cannot find module ... npm-cli.js` が出る場合は、PC の npm インストールが壊れています。Node.js 公式インストーラで Node.js を修復インストールしてから、もう一度 `npm install` を実行してください。
+
+`.env` を編集します。
+
+- `DISCORD_TOKEN`: Discord bot token
+- `DISCORD_CHANNEL_ID`: 印刷したいチャンネル ID
+- `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
+- `PRINTER_NAME`: Windows のプリンタ名
+- `CUT_MODE`: `none`、`partial`、`full`。通常は `partial` 推奨
+- `MERGE_SAME_USER_WINDOW_MS`: 同じユーザーの連投でヘッダーを省略する時間
+- `PRINT_AUTHOR_AVATAR`: 発言者アイコンを印刷するか
+- `AUTHOR_AVATAR_WIDTH_DOTS`: 発言者アイコンの印刷幅
+- `IMAGE_DITHER_MODE`: 画像変換方式。`ordered` は網点でグレーを表現、`threshold` は単純な白黒2値
+- `IMAGE_MAX_BYTES`: 画像ダウンロード上限。画像は印刷幅まで縮小されます
+- `PRINT_URL_QR`: URL を QR コードとして印刷するか
+- `QR_MODULE_SIZE`: QR コードのドットサイズ
+- `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
+- `PRINTED_REACTION`: 印刷完了後に bot が付けるリアクション絵文字
+- `PRINT_ERROR_REACTION`: 印刷失敗または一部スキップ時に bot が付けるリアクション絵文字
+
+プリンタ名は PowerShell で確認できます。
+
+```powershell
+Get-Printer | Select-Object Name
+```
+
+## Discord 側の設定
+
+1. Discord Developer Portal で bot を作成します。
+2. Bot 設定で `MESSAGE CONTENT INTENT` を有効にします。
+3. OAuth2 URL Generator で `bot` を選び、権限は最低限 `View Channels`、`Read Message History`、`Send Messages`、`Add Reactions` を付けます。
+4. bot をサーバーに招待します。
+5. Discord の開発者モードを有効にして、印刷対象チャンネルを右クリックし「IDをコピー」します。
+
+`Error: Used disallowed intents` が出る場合は、ほぼ `MESSAGE CONTENT INTENT` が無効です。Discord Developer Portal の `Bot` ページで `Privileged Gateway Intents` の `MESSAGE CONTENT INTENT` をオンにして保存し、`.env` の `DISCORD_TOKEN` が同じアプリの bot token か確認してください。
+
+## 実行
+
+```powershell
+npm start
+```
+
+## コード印刷コマンド
+
+通常メッセージのコマンドでプリンタ内蔵コード印字を実行できます。
+
+```text
+!qr https://example.com
+!print-code qr https://example.com
+!print-code code128 ABC123
+!print-code jan13 490123456789
+```
+
+対応種別: UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
+
+## Windows 起動時に非表示で常駐
+
+ログオン時に bot を非表示で起動するタスクを登録できます。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-startup-task.ps1
+```
+
+すぐに非表示起動したい場合:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\start-bot-hidden.ps1
+```
+
+停止:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\stop-bot.ps1
+```
+
+自動起動を解除して、起動中の bot も止める場合:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\uninstall-startup-task.ps1 -StopBot
+```
+
+ログは `logs\discord-printer-bot.out.log` と `logs\discord-printer-bot.err.log` に出力されます。
+
+## 注意
+
+- Unicode 絵文字は Twemoji CDN から画像を取得して印刷します。インターネット接続が必要です。
+- Discord のユーザーアイコン、スタンプ、添付画像も Discord CDN から取得します。
+- 動画、音声、PDF など画像ではない添付ファイルは印刷されません。
+- 日本語は Shift_JIS/CP932 と ESC/POS 漢字モードで送ります。プリンタ側の日本語フォント対応が必要です。

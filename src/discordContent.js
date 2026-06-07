@@ -1,0 +1,532 @@
+import emojiRegex from 'emoji-regex';
+import sharp from 'sharp';
+import { EscPosBuilder, findUnsupportedPrinterChars } from './escpos.js';
+
+const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
+const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
+const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
+
+export async function buildPrintJob(message, config, options = {}) {
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const warnings = [];
+  const printHeader = options.printHeader ?? config.printHeader;
+
+  if (printHeader) {
+    try {
+      const headerImage = await buildAuthorHeaderImage(message, config);
+      await printer.image(headerImage, {
+        maxWidth: config.printWidthDots,
+        dither: config.imageDitherMode
+      });
+    } catch (error) {
+      console.error(`Failed to print author header for ${message.author.id}:`, error);
+      warnings.push(`ヘッダー画像の印刷に失敗: ${error.message}`);
+      printTextHeader(printer, message, warnings);
+    }
+  } else if (config.printAuthorAvatar) {
+    try {
+      await printAuthorAvatar(printer, message, config);
+    } catch (error) {
+      console.error(`Failed to print author avatar for ${message.author.id}:`, error);
+      warnings.push(`アイコン画像の印刷に失敗: ${error.message}`);
+    }
+  }
+
+  const { text, imageItems, urls } = extractMessageContent(message);
+
+  printTextBlock(printer, text, warnings);
+
+  if (config.printUrlQr && urls.length > 0) {
+    for (const url of urls) {
+      printTextLine(printer, '[URL QR]', warnings);
+      printer.qrCode(url, {
+        moduleSize: config.qrModuleSize,
+        errorCorrection: config.qrErrorCorrection
+      });
+    }
+  }
+
+  await printImageItems(printer, imageItems, config, warnings);
+  await printStickers(printer, message, config, warnings);
+  await printForwardedSnapshots(printer, message, config, warnings);
+
+  if (!hasPrintableMessageContent(message)) {
+    printTextLine(printer, '[印刷できる本文がありません]', warnings);
+  }
+
+  printer.cut(config.cutMode);
+
+  return {
+    bytes: printer.build(),
+    warnings
+  };
+}
+
+function printTextBlock(printer, text, warnings) {
+  const printableText = formatDiscordMarkdownForPrint(text);
+  if (!printableText.trim()) return;
+
+  for (const line of wrapText(printableText.trim(), 32)) {
+    printTextLine(printer, line, warnings);
+  }
+  printer.feed(1);
+}
+
+function printTextLine(printer, line, warnings) {
+  recordUnsupportedChars(line, warnings);
+  printer.line(line);
+}
+
+async function printImageItems(printer, imageItems, config, warnings) {
+  for (const item of imageItems) {
+    try {
+      if (item.label) printTextLine(printer, item.label, warnings);
+      const bytes = await fetchFirstImage(item.urls ?? [item.url], config);
+      await printer.image(bytes, {
+        maxWidth: config.printWidthDots,
+        dither: config.imageDitherMode
+      });
+    } catch (error) {
+      printTextLine(printer, `[画像取得失敗: ${item.label || item.url}]`, warnings);
+      warnings.push(`${item.label || '画像'} を印刷できませんでした: ${error.message}`);
+      console.error(`Failed to print image ${item.url || item.urls?.[0]}:`, error);
+    }
+  }
+}
+
+async function printStickers(printer, message, config, warnings) {
+  const stickers = valuesOf(message.stickers);
+  if (stickers.length === 0) return;
+
+  for (const sticker of stickers) {
+    const url = sticker.url;
+    if (!url) continue;
+    try {
+      printTextLine(printer, `[スタンプ: ${sticker.name}]`, warnings);
+      const bytes = await fetchImage(url, config);
+      await printer.image(bytes, {
+        maxWidth: Math.min(config.printWidthDots, 256),
+        dither: config.imageDitherMode
+      });
+    } catch (error) {
+      printTextLine(printer, `[スタンプ取得失敗: ${sticker.name}]`, warnings);
+      warnings.push(`スタンプ ${sticker.name} を印刷できませんでした: ${error.message}`);
+      console.error(`Failed to print sticker ${sticker.id}:`, error);
+    }
+  }
+}
+
+async function printForwardedSnapshots(printer, message, config, warnings) {
+  const snapshots = valuesOf(message.messageSnapshots);
+  if (snapshots.length === 0) return;
+
+  for (const snapshot of snapshots) {
+    const { text, imageItems, urls } = extractMessageContent(snapshot);
+
+    printTextLine(printer, '[転送メッセージ]', warnings);
+    printTextBlock(printer, text, warnings);
+
+    if (config.printUrlQr && urls.length > 0) {
+      for (const url of urls) {
+        printTextLine(printer, '[URL QR]', warnings);
+        printer.qrCode(url, {
+          moduleSize: config.qrModuleSize,
+          errorCorrection: config.qrErrorCorrection
+        });
+      }
+    }
+
+    await printImageItems(printer, imageItems, config, warnings);
+    await printStickers(printer, snapshot, config, warnings);
+    printer.feed(1);
+  }
+}
+
+function hasPrintableMessageContent(message) {
+  const own = extractMessageContent(message);
+  if (own.text.trim() || own.imageItems.length > 0 || valuesOf(message.stickers).length > 0) {
+    return true;
+  }
+
+  for (const snapshot of valuesOf(message.messageSnapshots)) {
+    const forwarded = extractMessageContent(snapshot);
+    if (forwarded.text.trim() || forwarded.imageItems.length > 0 || valuesOf(snapshot.stickers).length > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function recordUnsupportedChars(text, warnings) {
+  const unsupported = findUnsupportedPrinterChars(text);
+  for (const item of unsupported) {
+    const message = `印刷できない文字: "${item.char}" (${item.codePoint})`;
+    if (!warnings.includes(message)) {
+      warnings.push(message);
+      console.warn(`${message} count=${item.count}`);
+    }
+  }
+}
+
+async function printAuthorAvatar(printer, message, config) {
+  const avatarUrl = message.author.displayAvatarURL({
+    extension: 'png',
+    size: 128
+  });
+  const avatarBytes = await fetchImage(avatarUrl, config);
+  await printer.image(avatarBytes, {
+    maxWidth: Math.min(config.authorAvatarWidthDots, config.printWidthDots),
+    dither: config.imageDitherMode
+  });
+}
+
+function printTextHeader(printer, message, warnings) {
+  const time = formatMessageTime(message.createdAt);
+  printer.bold(true);
+  printTextLine(printer, displayName(message), warnings);
+  printer.bold(false);
+  printTextLine(printer, time, warnings);
+  printTextLine(printer, '-'.repeat(32), warnings);
+}
+
+async function buildAuthorHeaderImage(message, config) {
+  const avatarSize = Math.min(config.authorAvatarWidthDots, 128);
+  const padding = 8;
+  const gap = 10;
+  const width = config.printWidthDots;
+  const height = Math.max(avatarSize + padding * 2, 72);
+  const textX = padding + avatarSize + gap;
+  const textWidth = width - textX - padding;
+  const name = escapeXml(truncateText(displayName(message), 24));
+  const time = escapeXml(formatMessageTime(message.createdAt));
+  const fontFace = systemFontFaceCss();
+
+  let avatar = null;
+  if (config.printAuthorAvatar) {
+    const avatarUrl = message.author.displayAvatarURL({
+      extension: 'png',
+      size: 128
+    });
+    const avatarBytes = await fetchImage(avatarUrl, config);
+    avatar = await sharp(avatarBytes)
+      .rotate()
+      .resize(avatarSize, avatarSize, { fit: 'cover' })
+      .png()
+      .toBuffer();
+  }
+
+  const svg = Buffer.from(`
+<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    ${fontFace}
+    .name { font-family: HeaderFont, Arial, sans-serif; font-size: 26px; font-weight: 700; fill: #000; }
+    .time { font-family: HeaderFont, Arial, sans-serif; font-size: 20px; fill: #000; }
+  </style>
+  <rect width="100%" height="100%" fill="white"/>
+  <text class="name" x="${textX}" y="${padding + 28}">${name}</text>
+  <text class="time" x="${textX}" y="${padding + 56}">${time}</text>
+  <line x1="${textX}" y1="${height - 8}" x2="${textX + textWidth}" y2="${height - 8}" stroke="black" stroke-width="2"/>
+</svg>`);
+
+  const composites = [{ input: svg, left: 0, top: 0 }];
+  if (avatar) {
+    composites.push({ input: avatar, left: padding, top: padding });
+  }
+
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: '#ffffff'
+    }
+  })
+    .composite(composites)
+    .png()
+    .toBuffer();
+}
+
+function systemFontFaceCss() {
+  const fontPath = 'C:/Windows/Fonts/meiryo.ttc';
+  return `@font-face { font-family: HeaderFont; src: url("file:///${fontPath}"); }`;
+}
+
+function displayName(message) {
+  return message.member?.displayName ?? message.author.globalName ?? message.author.username;
+}
+
+function formatMessageTime(date) {
+  return new Intl.DateTimeFormat('ja-JP', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    timeZone: 'Asia/Tokyo'
+  }).format(date);
+}
+
+function truncateText(value, maxLength) {
+  const chars = Array.from(value);
+  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join('')}...` : value;
+}
+
+function escapeXml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function extractMessageContent(message) {
+  const imageItems = [];
+  let text = message.content ?? '';
+  const urls = extractUrls(text);
+
+  text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
+    imageItems.push({
+      label: `[絵文字: ${name}]`,
+      url: `https://cdn.discordapp.com/emojis/${id}.png?size=128&quality=lossless`
+    });
+    return '';
+  });
+
+  const unicodeEmoji = emojiRegex();
+  text = text.replace(unicodeEmoji, (emoji) => {
+    imageItems.push({
+      label: `[絵文字: ${emoji}]`,
+      urls: twemojiUrls(emoji)
+    });
+    return '';
+  });
+
+  for (const attachment of valuesOf(message.attachments)) {
+    if (isImageAttachment(attachment)) {
+      imageItems.push({
+        label: `[画像: ${attachment.name || attachment.id}]`,
+        url: attachment.url
+      });
+    }
+  }
+
+  for (const embed of valuesOf(message.embeds)) {
+    const imageUrl = embed.image?.url ?? embed.thumbnail?.url;
+    if (imageUrl) {
+      imageItems.push({
+        label: '[埋め込み画像]',
+        url: imageUrl
+      });
+    }
+  }
+
+  return { text: text.replace(/[ \t]+\n/g, '\n'), imageItems, urls };
+}
+
+function formatDiscordMarkdownForPrint(text) {
+  const codeBlocks = [];
+  let formatted = text.replace(/```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_match, language, code) => {
+    const index = codeBlocks.length;
+    codeBlocks.push(formatCodeBlockLiteral(code, language));
+    return `\u0000CODEBLOCK${index}\u0000`;
+  });
+
+  const inlineCodes = [];
+  formatted = formatted.replace(/`([^`\n]+)`/g, (_match, code) => {
+    const index = inlineCodes.length;
+    inlineCodes.push(`\`${code}\``);
+    return `\u0000INLINECODE${index}\u0000`;
+  });
+
+  formatted = formatted
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1 ($2)')
+    .replace(/\u0000INLINECODE(\d+)\u0000/g, (_match, index) => inlineCodes[Number(index)] ?? '');
+
+  const lines = formatted.split(/\r?\n/);
+  const result = [];
+  let multiQuote = false;
+
+  for (const rawLine of lines) {
+    let line = rawLine;
+
+    if (line.startsWith('>>> ')) {
+      multiQuote = true;
+      result.push(`> ${line.slice(4)}`);
+      continue;
+    }
+
+    if (multiQuote) {
+      result.push(`> ${line}`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const title = heading[2].trim();
+      result.push(level === 1 ? title.toUpperCase() : `${'#'.repeat(level)} ${title}`);
+      result.push('-'.repeat(Math.min(displayColumns(title), 32)));
+      continue;
+    }
+
+    const subtext = line.match(/^-#\s+(.+)$/);
+    if (subtext) {
+      result.push(line);
+      continue;
+    }
+
+    const quote = line.match(/^>\s?(.+)$/);
+    if (quote) {
+      result.push(`> ${quote[1]}`);
+      continue;
+    }
+
+    const bullet = line.match(/^(\s*)([-*])\s+(.+)$/);
+    if (bullet) {
+      const indent = ' '.repeat(Math.floor(bullet[1].length / 2) * 2);
+      result.push(`${indent}- ${bullet[3]}`);
+      continue;
+    }
+
+    const numbered = line.match(/^(\s*)(\d+)\.\s+(.+)$/);
+    if (numbered) {
+      result.push(`${numbered[1]}${numbered[2]}. ${numbered[3]}`);
+      continue;
+    }
+
+    result.push(line);
+  }
+
+  formatted = result.join('\n');
+  formatted = formatted.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_match, index) => codeBlocks[Number(index)] ?? '');
+  return formatted;
+}
+
+function formatCodeBlockLiteral(code, language) {
+  const prefix = language ? `\`\`\`${language}\n` : '```\n';
+  return `${prefix}${code.replace(/\s+$/g, '')}\n\`\`\``;
+}
+
+function valuesOf(collection) {
+  if (!collection) return [];
+  if (typeof collection.values === 'function') return Array.from(collection.values());
+  if (Array.isArray(collection)) return collection;
+  return Object.values(collection);
+}
+
+function extractUrls(text) {
+  const seen = new Set();
+  const urls = [];
+
+  for (const match of text.matchAll(URL_RE)) {
+    const url = trimUrl(match[0]);
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+
+  return urls;
+}
+
+function trimUrl(url) {
+  return url.replace(/[.,!?;:、。！？；：]+$/u, '');
+}
+
+function isImageAttachment(attachment) {
+  if (attachment.contentType?.startsWith('image/')) return true;
+  return IMAGE_EXT_RE.test(attachment.name ?? attachment.url ?? '');
+}
+
+async function fetchImage(url, config) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'discord-printer-bot/0.1'
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > config.imageMaxBytes) {
+    throw new Error(`Image is too large: ${contentLength} bytes`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > config.imageMaxBytes) {
+    throw new Error(`Image is too large: ${arrayBuffer.byteLength} bytes`);
+  }
+
+  return Buffer.from(arrayBuffer);
+}
+
+async function fetchFirstImage(urls, config) {
+  let lastError = null;
+
+  for (const url of urls.filter(Boolean)) {
+    try {
+      return await fetchImage(url, config);
+    } catch (error) {
+      lastError = error;
+      if (!String(error.message).includes('HTTP 404')) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError ?? new Error('No image URL candidates');
+}
+
+function twemojiUrls(emoji) {
+  const candidates = [
+    emojiCodepoints(emoji, { keepVariationSelector: true }),
+    emojiCodepoints(emoji, { keepVariationSelector: false })
+  ]
+    .filter((codepoints) => codepoints.length > 0)
+    .map((codepoints) => twemojiAssetUrl(codepoints));
+
+  return Array.from(new Set(candidates));
+}
+
+function emojiCodepoints(emoji, { keepVariationSelector }) {
+  const codepoints = [];
+  for (const symbol of Array.from(emoji)) {
+    const codepoint = symbol.codePointAt(0);
+    if (!keepVariationSelector && codepoint === 0xfe0f) continue;
+    codepoints.push(codepoint.toString(16));
+  }
+  return codepoints;
+}
+
+function twemojiAssetUrl(codepoints) {
+  return `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${codepoints.join('-')}.png`;
+}
+
+function wrapText(text, maxColumns) {
+  const lines = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = '';
+    let columns = 0;
+    for (const char of Array.from(rawLine)) {
+      const width = charWidth(char);
+      if (columns + width > maxColumns && line) {
+        lines.push(line);
+        line = '';
+        columns = 0;
+      }
+      line += char;
+      columns += width;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+function displayColumns(text) {
+  return Array.from(text).reduce((columns, char) => columns + charWidth(char), 0);
+}
+
+function charWidth(char) {
+  return char.charCodeAt(0) <= 0x7f ? 1 : 2;
+}

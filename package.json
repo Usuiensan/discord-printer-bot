@@ -1,0 +1,27 @@
+{
+  "name": "discord-printer-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Print messages from a Discord channel to an Epson TM-T70II receipt printer.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js",
+    "discord:diagnose": "node tools/diagnose-discord.js",
+    "discord:delete-commands": "node tools/delete-discord-commands.js",
+    "start:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/start-bot-hidden.ps1",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/stop-bot.ps1",
+    "startup:install": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-startup-task.ps1",
+    "startup:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/uninstall-startup-task.ps1 -StopBot"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "emoji-regex": "^10.3.0",
+    "iconv-lite": "^0.6.3",
+    "sharp": "^0.33.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
