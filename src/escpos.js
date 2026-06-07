@@ -60,6 +60,17 @@ export class EscPosBuilder {
     return this;
   }
 
+  size(widthMult, heightMult) {
+    const n = ((widthMult - 1) << 4) | (heightMult - 1);
+    this.raw(Buffer.from([GS, 0x21, n]));
+    return this;
+  }
+
+  smallText(enabled) {
+    this.raw(Buffer.from([ESC, 0x4D, enabled ? 1 : 0]));
+    return this;
+  }
+
   feed(lines = 1) {
     this.raw(Buffer.alloc(Math.max(0, lines), LF));
     return this;
@@ -305,8 +316,25 @@ export function findUnsupportedPrinterChars(value) {
     if (char === '\r' || char === '\n' || char === '\t') continue;
 
     const encoded = iconv.encode(char, 'cp932');
-    const decoded = iconv.decode(encoded, 'cp932');
-    if (decoded !== char || (decoded === '?' && char !== '?')) {
+    let isSupported = false;
+
+    if (encoded.length === 1) {
+      const code = encoded[0];
+      if ((code >= 0x20 && code <= 0x7E) || (code >= 0xA1 && code <= 0xDF)) {
+        isSupported = true;
+      }
+    } else if (encoded.length === 2) {
+      const code = (encoded[0] << 8) | encoded[1];
+      if (code >= 0x8140 && code <= 0xEAAD) {
+        isSupported = true;
+      } else if (code >= 0xED40 && code <= 0xEEFC) {
+        isSupported = true;
+      } else if (code >= 0xFA40 && code <= 0xFC4E) {
+        isSupported = true;
+      }
+    }
+
+    if (!isSupported) {
       unsupported.set(char, (unsupported.get(char) ?? 0) + 1);
     }
   }

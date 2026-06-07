@@ -66,8 +66,41 @@ function printTextBlock(printer, text, warnings) {
   const printableText = formatDiscordMarkdownForPrint(text);
   if (!printableText.trim()) return;
 
-  for (const line of wrapText(printableText.trim(), 32)) {
-    printTextLine(printer, line, warnings);
+  const rawLines = printableText.trim().split(/\r?\n/);
+  for (const rawLine of rawLines) {
+    let size = 1;
+    let isSmall = false;
+    let textToPrint = rawLine;
+
+    const matchHeading = rawLine.match(/^\u0000HEADING(\d+)\u0000(.*)$/);
+    const matchSmall = rawLine.match(/^\u0000SMALL\u0000(.*)$/);
+
+    if (matchHeading) {
+      const level = parseInt(matchHeading[1], 10);
+      size = level === 1 ? 4 : 2;
+      textToPrint = matchHeading[2];
+    } else if (matchSmall) {
+      isSmall = true;
+      textToPrint = matchSmall[1];
+    }
+
+    const maxCols = isSmall ? 42 : Math.floor(32 / size);
+
+    if (size > 1) {
+      printer.size(size, size);
+    }
+    if (isSmall) {
+      printer.smallText(true);
+    }
+    for (const line of wrapText(textToPrint, maxCols)) {
+      printTextLine(printer, line, warnings);
+    }
+    if (size > 1) {
+      printer.size(1, 1);
+    }
+    if (isSmall) {
+      printer.smallText(false);
+    }
   }
   printer.feed(1);
 }
@@ -359,18 +392,25 @@ function formatDiscordMarkdownForPrint(text) {
       continue;
     }
 
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    const heading = line.match(/^(#{1,2})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
       const title = heading[2].trim();
-      result.push(level === 1 ? title.toUpperCase() : `${'#'.repeat(level)} ${title}`);
+      result.push(`\u0000HEADING${level}\u0000${title}`);
+      continue;
+    }
+
+    const heading3 = line.match(/^###\s+(.+)$/);
+    if (heading3) {
+      const title = heading3[1].trim();
+      result.push(`### ${title}`);
       result.push('-'.repeat(Math.min(displayColumns(title), 32)));
       continue;
     }
 
     const subtext = line.match(/^-#\s+(.+)$/);
     if (subtext) {
-      result.push(line);
+      result.push(`\u0000SMALL\u0000${subtext[1]}`);
       continue;
     }
 
