@@ -1,6 +1,6 @@
 import emojiRegex from 'emoji-regex';
 import sharp from 'sharp';
-import { EscPosBuilder, findUnsupportedPrinterChars } from './escpos.js';
+import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
@@ -13,7 +13,7 @@ export async function buildPrintJob(message, config, options = {}) {
 
   if (printHeader) {
     try {
-      const headerImage = await buildAuthorHeaderImage(message, config);
+      const headerImage = await buildAuthorHeaderImage(message, config, options.printNumber);
       await printer.image(headerImage, {
         maxWidth: config.printWidthDots,
         dither: config.imageDitherMode
@@ -21,7 +21,7 @@ export async function buildPrintJob(message, config, options = {}) {
     } catch (error) {
       console.error(`Failed to print author header for ${message.author.id}:`, error);
       warnings.push(`ヘッダー画像の印刷に失敗: ${error.message}`);
-      printTextHeader(printer, message, warnings);
+      printTextHeader(printer, message, warnings, options.printNumber);
     }
   } else if (config.printAuthorAvatar) {
     try {
@@ -509,14 +509,23 @@ function hasPrintableMessageContent(message) {
 }
 
 function recordUnsupportedChars(text, warnings) {
-  const unsupported = findUnsupportedPrinterChars(text);
-  for (const item of unsupported) {
-    const message = `印刷できない文字: "${item.char}" (${item.codePoint})`;
+  const { replacements } = normalizePrinterTextDetailed(text);
+  for (const item of replacements) {
+    const message = formatReplacementWarning(item.from, item.to);
     if (!warnings.includes(message)) {
       warnings.push(message);
       console.warn(`${message} count=${item.count}`);
     }
   }
+}
+
+function formatReplacementWarning(from, to) {
+  return `「${from}」(${formatCodePoint(from)})を「${to}」(${formatCodePoint(to)})に置換しました`;
+}
+
+function formatCodePoint(char) {
+  const codePoint = char.codePointAt(0);
+  return `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
 async function printAuthorAvatar(printer, message, config) {
@@ -531,25 +540,31 @@ async function printAuthorAvatar(printer, message, config) {
   });
 }
 
-function printTextHeader(printer, message, warnings) {
-  const time = formatMessageTime(message.createdAt);
+function printTextHeader(printer, message, warnings, printNumber) {
+  const time = formatMessageTimeParts(message.createdAt);
   printer.bold(true);
   printTextLine(printer, displayName(message), warnings);
   printer.bold(false);
-  printTextLine(printer, time, warnings);
+  printTextLine(printer, time.date, warnings);
+  printTextLine(printer, time.time, warnings);
+  const numberText = formatPrintNumber(printNumber);
+  if (numberText) printTextLine(printer, numberText, warnings);
   printTextLine(printer, '-'.repeat(32), warnings);
 }
 
-async function buildAuthorHeaderImage(message, config) {
+async function buildAuthorHeaderImage(message, config, printNumber) {
   const avatarSize = Math.min(config.authorAvatarWidthDots, 128);
   const padding = 8;
   const gap = 10;
   const width = config.printWidthDots;
-  const height = Math.max(avatarSize + padding * 2, 72);
+  const height = Math.max(avatarSize + padding * 2, 124);
   const textX = padding + avatarSize + gap;
   const textWidth = width - textX - padding;
   const name = escapeXml(truncateText(displayName(message), 24));
-  const time = escapeXml(formatMessageTime(message.createdAt));
+  const numberText = escapeXml(formatPrintNumber(printNumber));
+  const time = formatMessageTimeParts(message.createdAt);
+  const dateText = escapeXml(time.date);
+  const timeText = escapeXml(time.time);
   const fontFace = systemFontFaceCss();
 
   let avatar = null;
@@ -570,12 +585,15 @@ async function buildAuthorHeaderImage(message, config) {
 <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <style>
     ${fontFace}
-    .name { font-family: HeaderFont, Arial, sans-serif; font-size: 26px; font-weight: 700; fill: #000; }
-    .time { font-family: HeaderFont, Arial, sans-serif; font-size: 20px; fill: #000; }
+    .name { font-family: HeaderFont, Arial, sans-serif; font-size: 32px; font-weight: 700; fill: #000; }
+    .meta { font-family: HeaderFont, Arial, sans-serif; font-size: 24px; fill: #000; }
+    .number { font-family: HeaderFont, Arial, sans-serif; font-size: 24px; font-weight: 700; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
-  <text class="name" x="${textX}" y="${padding + 28}">${name}</text>
-  <text class="time" x="${textX}" y="${padding + 56}">${time}</text>
+  <text class="name" x="${textX}" y="${padding + 30}">${name}</text>
+  <text class="meta" x="${textX}" y="${padding + 56}">${dateText}</text>
+  <text class="meta" x="${textX}" y="${padding + 80}">${timeText}</text>
+  <text class="number" x="${textX}" y="${padding + 104}">${numberText}</text>
   <line x1="${textX}" y1="${height - 8}" x2="${textX + textWidth}" y2="${height - 8}" stroke="black" stroke-width="2"/>
 </svg>`);
 
@@ -598,7 +616,7 @@ async function buildAuthorHeaderImage(message, config) {
 }
 
 function systemFontFaceCss() {
-  const fontPath = 'C:/Windows/Fonts/meiryo.ttc';
+  const fontPath = 'C:/Windows/Fonts/msgothic.ttc';
   return `@font-face { font-family: HeaderFont; src: url("file:///${fontPath}"); }`;
 }
 
@@ -606,12 +624,33 @@ function displayName(message) {
   return message.member?.displayName ?? message.author.globalName ?? message.author.username;
 }
 
+function formatPrintNumber(printNumber) {
+  const value = Number.parseInt(printNumber, 10);
+  return Number.isFinite(value) && value > 0 ? `No.${value}` : '';
+}
+
 function formatMessageTime(date) {
-  return new Intl.DateTimeFormat('ja-JP', {
-    dateStyle: 'short',
-    timeStyle: 'medium',
+  const time = formatMessageTimeParts(date);
+  return `${time.date}${time.time}`;
+}
+
+function formatMessageTimeParts(date) {
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
     timeZone: 'Asia/Tokyo'
-  }).format(date);
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    date: `${value.year}年${value.month}月${value.day}日（${value.weekday}）`,
+    time: `${value.hour}:${value.minute}:${value.second}`
+  };
 }
 
 function truncateText(value, maxLength) {

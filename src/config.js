@@ -36,6 +36,8 @@ export const config = {
   printerName: requireEnv('PRINTER_NAME'),
   printRetryAttempts: intEnv('PRINT_RETRY_ATTEMPTS', 8),
   printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
+  printerMonitorEnabled: boolEnv('PRINTER_MONITOR_ENABLED', true),
+  printerMonitorIntervalMs: intEnv('PRINTER_MONITOR_INTERVAL_MS', 10000),
   oposStatusEnabled: boolEnv('OPOS_STATUS_ENABLED', false),
   oposLogicalName: optionalEnv('OPOS_LOGICAL_NAME', ''),
   oposClaimTimeoutMs: intEnv('OPOS_CLAIM_TIMEOUT_MS', 1000),
@@ -53,5 +55,6 @@ export const config = {
   qrErrorCorrection: optionalEnv('QR_ERROR_CORRECTION', 'M'),
   messageCommandPrefix: optionalEnv('MESSAGE_COMMAND_PREFIX', '!'),
   printedReaction: optionalEnv('PRINTED_REACTION', '✅'),
+  printNearEndReaction: optionalEnv('PRINT_NEAR_END_REACTION', '🧻'),
   printErrorReaction: optionalEnv('PRINT_ERROR_REACTION', '⚠️')
 };

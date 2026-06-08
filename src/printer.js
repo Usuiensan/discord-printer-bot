@@ -28,6 +28,9 @@ const HARD_PRINTER_PROBLEMS = new Set([
   '排紙トレイ満杯',
   '手動給紙待ち'
 ]);
+const WARNING_ONLY_PRINTER_PROBLEMS = new Set([
+  'レシート用紙残量少'
+]);
 
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
   const dir = join(os.tmpdir(), 'discord-printer-bot');
@@ -57,16 +60,26 @@ export async function sendRawToPrinter(bytes, printerName, options = {}) {
 }
 
 export async function assertPrinterReady(printerName, options = {}) {
+  const problems = (await checkPrinterProblems(printerName, options))
+    .filter((problem) => !WARNING_ONLY_PRINTER_PROBLEMS.has(problem));
+  if (problems.length > 0) {
+    throw printerStatusError('プリンタエラー', problems);
+  }
+}
+
+export async function checkPrinterProblems(printerName, options = {}) {
   if (options.oposStatusEnabled && options.oposLogicalName) {
     try {
       const oposStatus = await getOposStatus(options.oposLogicalName, options.oposClaimTimeoutMs);
       const oposProblems = describeOposProblems(oposStatus);
       if (oposProblems.length > 0) {
-        throw new Error(`プリンタエラー(OPOS): ${oposProblems.join(' / ')}`);
+        return oposProblems;
       }
-      return;
+      return [];
     } catch (error) {
-      console.warn(`OPOS printer status check failed: ${error.message}`);
+      if (!isOposExclusiveAccessError(error)) {
+        console.warn(`OPOS printer status check failed: ${error.message}`);
+      }
     }
   }
 
@@ -75,13 +88,10 @@ export async function assertPrinterReady(printerName, options = {}) {
     status = await getPrinterStatus(printerName);
   } catch (error) {
     console.warn(`Printer status check skipped: ${error.message}`);
-    return;
+    return [];
   }
 
-  const problems = describePrinterProblems(status);
-  if (problems.length > 0) {
-    throw printerStatusError('プリンタエラー', problems);
-  }
+  return describePrinterProblems(status);
 }
 
 async function retryPrintOperation(operation, options) {
@@ -100,6 +110,14 @@ async function retryPrintOperation(operation, options) {
 
       const waitMs = delayMs * attempt;
       console.warn(`Printer busy or not ready; retrying ${attempt}/${attempts - 1} in ${waitMs}ms: ${error.message}`);
+      if (typeof options.onRetry === 'function') {
+        await options.onRetry({
+          attempt,
+          attempts,
+          waitMs,
+          reason: error.message
+        });
+      }
       await sleep(waitMs);
     }
   }
@@ -127,6 +145,18 @@ function isRetryablePrintError(error) {
     'プリンターはビジー',
     '別のプロセス'
   ].some((pattern) => message.includes(pattern));
+}
+
+function isOposExclusiveAccessError(error) {
+  const message = String(error?.message ?? error);
+  if (message.includes('The port is already open')) return true;
+
+  return [
+    'Another application has exclusive access to the device',
+    'exclusive access',
+    'did not relinquish control before timeout',
+    'Claim'
+  ].every((pattern) => message.includes(pattern));
 }
 
 function sleep(ms) {

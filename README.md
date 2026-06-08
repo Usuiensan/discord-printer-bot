@@ -37,6 +37,8 @@ Copy-Item .env.example .env
 - `PRINTER_NAME`: Windows のプリンタ名
 - `PRINT_RETRY_ATTEMPTS`: 前ジョブ処理中など一時的なプリンタ状態での最大試行回数
 - `PRINT_RETRY_DELAY_MS`: リトライ待機時間。試行ごとに少しずつ伸びます
+- `PRINTER_MONITOR_ENABLED`: 起動中にプリンタ状態を定期監視し、問題を Discord に通知するか
+- `PRINTER_MONITOR_INTERVAL_MS`: プリンタ状態の監視間隔
 - `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
 - `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
 - `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
@@ -50,6 +52,7 @@ Copy-Item .env.example .env
 - `QR_MODULE_SIZE`: QR コードのドットサイズ
 - `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
 - `PRINTED_REACTION`: 印刷完了後に bot が付けるリアクション絵文字
+- `PRINT_NEAR_END_REACTION`: レシート用紙残量少の状態で印刷完了した時に付けるリアクション絵文字
 - `PRINT_ERROR_REACTION`: 印刷失敗または一部スキップ時に bot が付けるリアクション絵文字
 
 プリンタ名は PowerShell で確認できます。
@@ -101,6 +104,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 ```
 
 対応種別: UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
+
+## 再印刷コマンド
+
+過去の投稿をもう一度印刷できます。メッセージリンク、メッセージID、または返信先が使えます。
+
+```text
+!reprint 1513138512247918662
+!reprint https://discord.com/channels/1507235720912179200/1513044471275589752/1513138512247918662
+```
+
+対象メッセージへの返信として `!reprint` だけ打つこともできます。
 
 ## 本文内 ESC/POS 制御コマンド
 
@@ -193,6 +207,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\uninstall-startup-task
 ```
 
 ログは `logs\discord-printer-bot.out.log` と `logs\discord-printer-bot.err.log` に出力されます。
+
+## プリンタ状態通知
+
+紙切れ、カバーオープン、オフラインなど印刷できない状態は Discord に通知します。レシート用紙残量少だけの場合はチャンネルに「問題があります」と投稿せず、印刷完了リアクションを `PRINT_NEAR_END_REACTION` に変えます。
 
 ## 注意
 
