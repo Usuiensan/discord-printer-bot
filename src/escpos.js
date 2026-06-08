@@ -616,6 +616,7 @@ function isSupportedPrinterChar(char) {
 }
 
 const PRINTER_CHAR_FALLBACKS = new Map([
+  ['\u00A5', '\\'],
   ['\u301C', '~'],
   ['\uFF5E', '~'],
   ['\u2212', '-'],

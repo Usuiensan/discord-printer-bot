@@ -133,6 +133,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 
 - `!left` / `!center` / `!right`: 揃え位置
 - `!align left|center|right`: 揃え位置
+- `!row 左側 | 右側`: 同じ行に左寄せテキストと右寄せテキストを印字
+- `!rule -` / `!rule *`: 現在の文字幅いっぱいに区切り線を印字
+- `!blank 2`: 空行
+- `!box text`: `* text *` 形式の注意書き
 - `!bold on|off`: 太字
 - `**太字**`: Discord の太字をプリンタ太字で印刷
 - `!underline on|off|2`: 下線。`2` は太線
@@ -179,6 +183,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 ページモードは機種・ドライバー・現在の状態により無視される命令があります。通常のレシート印字では `!left`、`!center`、`!right`、`!bold`、`!size`、`!cut` から使うのがおすすめです。
 
 Discord からは、電源オフ、バッファクリア、NVメモリー書き込み/消去、メモリースイッチ変更、通信条件変更、リアルタイムステータス要求など、プリンタ設定や永続メモリーに影響する命令は実装しません。
+
+## レシート風レイアウトとプレビュー
+
+`!row` は現在の `!small` や `!size` の状態を見て、右側の金額が端に揃うように整形します。印刷前に確認したいときは、先頭に `!preview` を付けると印刷せず Discord にプレビューを返信します。
+
+```text
+!preview
+!center
+北大ジャンクPC・USEDPC研究会
+!left
+ご来場ありがとうございます！
+!rule -
+!row 外コロロ　SKYTIME味 | ¥165
+!row 内iPhone17 Pro Max 256GB 60コメ単164800 | ¥9888,000
+
+!row 小計 | ¥9927,055
+!row 外税 | ¥88
+!bold on
+!size 2 1
+!row 合計 | ¥9927,143
+!size 1 1
+!bold off
+
+!rule *
+!box 裏面に収入印紙を貼り割印して下さい
+```
 
 ## Windows 起動時に非表示で常駐
 

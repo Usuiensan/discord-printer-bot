@@ -62,13 +62,46 @@ export async function buildPrintJob(message, config, options = {}) {
   };
 }
 
+export function buildPreviewText(message, config) {
+  const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
+  const { text, imageItems, urls } = extractMessageContent({ ...message, content });
+  const lines = renderTextPreview(text);
+
+  if (config.printUrlQr && urls.length > 0) {
+    for (const url of urls) lines.push(`[QR: ${url}]`);
+  }
+
+  for (const item of imageItems) {
+    if (item.label?.startsWith('[絵文字:')) {
+      lines.push(item.label);
+    } else {
+      lines.push(item.label ? `[画像: ${item.label}]` : '[画像]');
+    }
+  }
+
+  for (const sticker of valuesOf(message.stickers)) {
+    lines.push(`[スタンプ: ${sticker.name ?? sticker.id}]`);
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '[印刷できる本文がありません]';
+}
+
 function printTextBlock(printer, text, warnings) {
   const printableText = formatDiscordMarkdownForPrint(text);
   if (!printableText.trim()) return;
 
+  const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
-    const controlResult = applyEscPosTextCommand(printer, rawLine);
+    const receiptResult = applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState);
+    if (receiptResult.applied) continue;
+    if (receiptResult.error) {
+      printTextLine(printer, `[レシートコマンドエラー: ${receiptResult.error}]`, warnings);
+      warnings.push(`レシートコマンドエラー: ${receiptResult.error}`);
+      continue;
+    }
+
+    const controlResult = applyEscPosTextCommand(printer, rawLine, layoutState);
     if (controlResult.applied) continue;
     if (controlResult.error) {
       printTextLine(printer, `[ESC/POSコマンドエラー: ${controlResult.error}]`, warnings);
@@ -113,7 +146,54 @@ function printTextBlock(printer, text, warnings) {
   printer.feed(1);
 }
 
-function applyEscPosTextCommand(printer, line) {
+function renderTextPreview(text) {
+  const printableText = formatDiscordMarkdownForPrint(text);
+  if (!printableText.trim()) return [];
+
+  const layoutState = createLayoutState();
+  const lines = [];
+
+  for (const rawLine of printableText.trim().split(/\r?\n/)) {
+    const receiptResult = applyPreviewReceiptCommand(lines, rawLine, layoutState);
+    if (receiptResult.applied) continue;
+    if (receiptResult.error) {
+      lines.push(`[レシートコマンドエラー: ${receiptResult.error}]`);
+      continue;
+    }
+
+    const controlResult = applyPreviewControlCommand(rawLine, layoutState);
+    if (controlResult.applied) continue;
+    if (controlResult.error) {
+      lines.push(`[ESC/POSコマンドエラー: ${controlResult.error}]`);
+      continue;
+    }
+
+    let size = 1;
+    let isSmall = false;
+    let textToPrint = rawLine;
+
+    const matchHeading = rawLine.match(/^\u0000HEADING(\d+)\u0000(.*)$/);
+    const matchSmall = rawLine.match(/^\u0000SMALL\u0000(.*)$/);
+
+    if (matchHeading) {
+      const level = parseInt(matchHeading[1], 10);
+      size = level === 1 ? 4 : 2;
+      textToPrint = matchHeading[2];
+    } else if (matchSmall) {
+      isSmall = true;
+      textToPrint = matchSmall[1];
+    }
+
+    const maxCols = isSmall ? 42 : Math.floor(32 / size);
+    for (const line of wrapText(previewPrintableText(textToPrint), maxCols)) {
+      lines.push(line);
+    }
+  }
+
+  return lines;
+}
+
+function applyEscPosTextCommand(printer, line, layoutState = createLayoutState()) {
   const trimmed = line.trim();
   const match = trimmed.match(/^!(?:escpos\s+)?([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+(.*))?$/);
   if (!match) return { applied: false };
@@ -169,19 +249,29 @@ function applyEscPosTextCommand(printer, line) {
         return { applied: true };
       case 'printmode':
       case 'print_mode':
-        printer.printMode(parsePrintModeArgs(args));
+        {
+          const mode = parsePrintModeArgs(args);
+          if (Object.hasOwn(mode, 'doubleWidth')) layoutState.sizeX = mode.doubleWidth ? 2 : 1;
+          printer.printMode(mode);
+        }
         return { applied: true };
       case 'small':
-        printer.smallText(parseOnOff(args[0], true));
+        layoutState.small = parseOnOff(args[0], true);
+        printer.smallText(layoutState.small);
         return { applied: true };
       case 'size':
         requireArgs(command, args, 2);
-        printer.size(clampMultiplier(args[0]), clampMultiplier(args[1]));
+        layoutState.sizeX = clampMultiplier(args[0]);
+        printer.size(layoutState.sizeX, clampMultiplier(args[1]));
         return { applied: true };
       case 'normal':
+        layoutState.small = false;
+        layoutState.sizeX = 1;
         printer.bold(false).underline(false).invert(false).rotate90(false).upsideDown(false).smallText(false).size(1, 1).align('left');
         return { applied: true };
       case 'reset':
+        layoutState.small = false;
+        layoutState.sizeX = 1;
         printer.initialize();
         return { applied: true };
       case 'linespacing':
@@ -372,6 +462,203 @@ function normalizeCommandName(value) {
   return String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
 }
 
+function createLayoutState() {
+  return {
+    small: false,
+    sizeX: 1
+  };
+}
+
+function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
+  try {
+    const command = parseReceiptLayoutCommand(line);
+    if (!command) return { applied: false };
+
+    for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
+      printStyledTextLine(printer, outputLine, warnings);
+    }
+    return { applied: true };
+  } catch (error) {
+    return { applied: false, error: error.message };
+  }
+}
+
+function applyPreviewReceiptCommand(lines, line, layoutState) {
+  try {
+    const command = parseReceiptLayoutCommand(line);
+    if (!command) return { applied: false };
+
+    for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
+      lines.push(previewPrintableText(outputLine));
+    }
+    return { applied: true };
+  } catch (error) {
+    return { applied: false, error: error.message };
+  }
+}
+
+function parseReceiptLayoutCommand(line) {
+  const match = line.trim().match(/^!(row|rule|blank|box)(?:\s+([\s\S]*))?$/i);
+  if (!match) return null;
+  return {
+    name: normalizeCommandName(match[1]),
+    body: match[2] ?? ''
+  };
+}
+
+function renderReceiptLayoutCommand(command, layoutState) {
+  const columns = currentLayoutColumns(layoutState);
+
+  if (command.name === 'row') {
+    const separator = command.body.indexOf('|');
+    if (separator < 0) throw new Error('row needs "|" separator');
+    const left = command.body.slice(0, separator).trim();
+    const right = command.body.slice(separator + 1).trim();
+    return formatReceiptRow(left, right, columns);
+  }
+
+  if (command.name === 'rule') {
+    const mark = Array.from(command.body.trim())[0] ?? '-';
+    return [mark.repeat(columns)];
+  }
+
+  if (command.name === 'blank') {
+    const count = command.body.trim() ? nonNegativeInt(command.body.trim(), 'blank') : 1;
+    return Array.from({ length: count }, () => '');
+  }
+
+  if (command.name === 'box') {
+    const text = command.body.trim();
+    if (!text) return ['*'.repeat(columns)];
+    const innerColumns = Math.max(1, columns - 4);
+    return wrapText(text, innerColumns).map((line) => {
+      const padding = Math.max(0, innerColumns - displayColumns(line));
+      return `* ${line}${' '.repeat(padding)} *`;
+    });
+  }
+
+  return [];
+}
+
+function formatReceiptRow(left, right, columns) {
+  const rightWidth = displayColumns(right);
+  if (!right) return wrapText(left, columns);
+  if (rightWidth >= columns - 1) {
+    return [...wrapText(left, columns), right];
+  }
+
+  const leftColumns = Math.max(1, columns - rightWidth - 1);
+  const leftLines = wrapText(left, leftColumns);
+  const lastLeft = leftLines.pop() ?? '';
+  const spaces = Math.max(1, columns - displayColumns(lastLeft) - rightWidth);
+  return [...leftLines, `${lastLeft}${' '.repeat(spaces)}${right}`];
+}
+
+function currentLayoutColumns(layoutState) {
+  const baseColumns = layoutState.small ? 42 : 32;
+  return Math.max(1, Math.floor(baseColumns / Math.max(1, layoutState.sizeX)));
+}
+
+function applyPreviewControlCommand(line, layoutState) {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^!(?:escpos\s+)?([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+(.*))?$/);
+  if (!match) return { applied: false };
+
+  const command = normalizeCommandName(match[1]);
+  const args = splitCommandArgs(match[2] ?? '');
+
+  try {
+    switch (command) {
+      case 'small':
+        layoutState.small = parseOnOff(args[0], true);
+        return { applied: true };
+      case 'size':
+        requireArgs(command, args, 2);
+        layoutState.sizeX = clampMultiplier(args[0]);
+        return { applied: true };
+      case 'printmode':
+      case 'print_mode':
+        {
+          const mode = parsePrintModeArgs(args);
+          if (Object.hasOwn(mode, 'doubleWidth')) layoutState.sizeX = mode.doubleWidth ? 2 : 1;
+        }
+        return { applied: true };
+      case 'normal':
+      case 'reset':
+        layoutState.small = false;
+        layoutState.sizeX = 1;
+        return { applied: true };
+      case 'left':
+      case 'center':
+      case 'centre':
+      case 'right':
+      case 'align':
+      case 'bold':
+      case 'underline':
+      case 'doublestrike':
+      case 'double_strike':
+      case 'invert':
+      case 'reverse':
+      case 'upsidedown':
+      case 'upside_down':
+      case 'rotate':
+      case 'rotate90':
+      case 'font':
+      case 'smoothing':
+      case 'smooth':
+      case 'linespacing':
+      case 'line_spacing':
+      case 'charspacing':
+      case 'char_spacing':
+      case 'position':
+      case 'pos':
+      case 'relative':
+      case 'rel':
+      case 'margin':
+      case 'leftmargin':
+      case 'left_margin':
+      case 'width':
+      case 'areawidth':
+      case 'area_width':
+      case 'motion':
+      case 'motionunits':
+      case 'motion_units':
+      case 'page':
+      case 'pagemode':
+      case 'page_mode':
+        return { applied: true };
+      case 'feed':
+        return { applied: true };
+      case 'blank':
+      case 'rule':
+      case 'row':
+      case 'box':
+        return { applied: false };
+      default:
+        return { applied: false };
+    }
+  } catch (error) {
+    return { applied: false, error: error.message };
+  }
+}
+
+function stripDiscordStyleMarkers(text) {
+  return String(text)
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1');
+}
+
+function previewPrintableText(text) {
+  return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).text;
+}
+
+function stripPreviewCommand(content, prefix) {
+  const trimmed = String(content ?? '').trimStart();
+  const command = `${prefix}preview`;
+  if (!trimmed.toLowerCase().startsWith(command.toLowerCase())) return content;
+  return trimmed.slice(command.length).replace(/^\s*\r?\n?/, '');
+}
+
 function printTextLine(printer, line, warnings) {
   recordUnsupportedChars(line, warnings);
   printer.line(line);
@@ -395,6 +682,10 @@ function printTextInline(printer, text, warnings) {
 }
 
 function parseDiscordStyleTokens(line) {
+  if (/^\*+$/.test(line)) {
+    return [{ text: line, bold: false, underline: false }];
+  }
+
   const tokens = [];
   let index = 0;
   let plain = '';
@@ -669,24 +960,28 @@ function escapeXml(value) {
 
 function extractMessageContent(message) {
   const imageItems = [];
+  const seenEmojiImages = new Set();
   let text = message.content ?? '';
   const urls = extractUrls(text);
 
   text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
-    imageItems.push({
-      label: `[絵文字: ${name}]`,
+    pushUniqueEmojiImage(imageItems, seenEmojiImages, {
+      key: `custom:${id}`,
+      label: `[絵文字: :${name}:]`,
       url: `https://cdn.discordapp.com/emojis/${id}.png?size=128&quality=lossless`
     });
-    return '';
+    return `:${name}:`;
   });
 
   const unicodeEmoji = emojiRegex();
   text = text.replace(unicodeEmoji, (emoji) => {
-    imageItems.push({
-      label: `[絵文字: ${emoji}]`,
+    const codepointName = emojiCodepointName(emoji);
+    pushUniqueEmojiImage(imageItems, seenEmojiImages, {
+      key: `unicode:${codepointName}`,
+      label: `[絵文字: :emoji_${codepointName}:]`,
       urls: twemojiUrls(emoji)
     });
-    return '';
+    return `:emoji_${codepointName}:`;
   });
 
   for (const attachment of valuesOf(message.attachments)) {
@@ -709,6 +1004,12 @@ function extractMessageContent(message) {
   }
 
   return { text: text.replace(/[ \t]+\n/g, '\n'), imageItems, urls };
+}
+
+function pushUniqueEmojiImage(imageItems, seenEmojiImages, item) {
+  if (seenEmojiImages.has(item.key)) return;
+  seenEmojiImages.add(item.key);
+  imageItems.push(item);
 }
 
 function formatDiscordMarkdownForPrint(text) {
@@ -885,6 +1186,10 @@ function twemojiUrls(emoji) {
   return Array.from(new Set(candidates));
 }
 
+function emojiCodepointName(emoji) {
+  return emojiCodepoints(emoji, { keepVariationSelector: false }).join('_');
+}
+
 function emojiCodepoints(emoji, { keepVariationSelector }) {
   const codepoints = [];
   for (const symbol of Array.from(emoji)) {
@@ -904,19 +1209,52 @@ function wrapText(text, maxColumns) {
   for (const rawLine of text.split(/\r?\n/)) {
     let line = '';
     let columns = 0;
-    for (const char of Array.from(rawLine)) {
-      const width = charWidth(char);
+    for (const unit of textWrapUnits(rawLine)) {
+      const width = displayColumns(unit);
       if (columns + width > maxColumns && line) {
         lines.push(line);
         line = '';
         columns = 0;
       }
-      line += char;
-      columns += width;
+      if (width > maxColumns) {
+        for (const char of Array.from(unit)) {
+          const charColumns = charWidth(char);
+          if (columns + charColumns > maxColumns && line) {
+            lines.push(line);
+            line = '';
+            columns = 0;
+          }
+          line += char;
+          columns += charColumns;
+        }
+      } else {
+        line += unit;
+        columns += width;
+      }
     }
     lines.push(line);
   }
   return lines;
+}
+
+function textWrapUnits(line) {
+  const units = [];
+  const pattern = /:emoji_[0-9a-f_]+:|:[A-Za-z0-9_+-]+:/gi;
+  let index = 0;
+
+  for (const match of line.matchAll(pattern)) {
+    if (match.index > index) {
+      units.push(...Array.from(line.slice(index, match.index)));
+    }
+    units.push(match[0]);
+    index = match.index + match[0].length;
+  }
+
+  if (index < line.length) {
+    units.push(...Array.from(line.slice(index)));
+  }
+
+  return units;
 }
 
 function displayColumns(text) {

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
-import { buildPrintJob } from './discordContent.js';
+import { buildPreviewText, buildPrintJob } from './discordContent.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 import { buildSymbolPrintJob, parseSymbolMessageCommand } from './symbolContent.js';
 
@@ -277,6 +277,12 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   try {
+    if (isPreviewMessageCommand(message)) {
+      await replyWithPreview(message);
+      await addReaction(message, '👀');
+      return;
+    }
+
     const reprintTarget = await parseReprintMessageCommand(message);
     if (reprintTarget) {
       await addReaction(message, '🖨️');
@@ -297,6 +303,21 @@ client.on(Events.MessageCreate, async (message) => {
 
   enqueuePrint(message);
 });
+
+function isPreviewMessageCommand(message) {
+  const content = (message.content ?? '').trimStart();
+  return content.toLowerCase().startsWith(`${config.messageCommandPrefix}preview`);
+}
+
+async function replyWithPreview(message) {
+  const preview = buildPreviewText(message, config);
+  const body = preview.length > 1800 ? `${preview.slice(0, 1800)}\n...省略` : preview;
+  await replyToMessage(message, `印刷プレビュー:\n\`\`\`text\n${escapeCodeBlock(body)}\n\`\`\``);
+}
+
+function escapeCodeBlock(value) {
+  return String(value).replace(/```/g, '`\\`\\`');
+}
 
 function isPrintableUserMessage(message) {
   return message.type === MessageType.Default || message.type === MessageType.Reply;
