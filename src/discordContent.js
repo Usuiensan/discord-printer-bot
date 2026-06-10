@@ -23,8 +23,14 @@ export async function buildPrintJob(message, config, options = {}) {
     ? { ...message, content: symbolExtraction.text }
     : message;
   const { text, imageItems, urls } = extractMessageContent(contentMessage);
+  const imageState = createInlineImageState();
 
-  printTextBlock(printer, text, warnings);
+  await printTextBlock(printer, text, warnings, {
+    config,
+    prefix: config.messageCommandPrefix,
+    imageItems,
+    imageState
+  });
 
   if (config.printUrlQr && urls.length > 0) {
     for (const url of urls) {
@@ -36,7 +42,7 @@ export async function buildPrintJob(message, config, options = {}) {
     }
   }
 
-  await printImageItems(printer, imageItems, config, warnings);
+  await printImageItems(printer, remainingImageItems(imageItems, imageState), config, warnings);
   await printStickers(printer, message, config, warnings);
   await printForwardedSnapshots(printer, message, config, warnings);
 
@@ -125,17 +131,22 @@ export async function appendDiscordHeader(printer, message, config, options = {}
 export function buildPreviewText(message, config) {
   const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
   const { text, imageItems, urls } = extractMessageContent({ ...message, content });
-  const lines = renderTextPreview(text);
+  const imageState = createInlineImageState();
+  const lines = renderTextPreview(text, {
+    prefix: config.messageCommandPrefix,
+    imageItems,
+    imageState
+  });
 
   if (config.printUrlQr && urls.length > 0) {
     for (const url of urls) lines.push(`[QR: ${url}]`);
   }
 
-  for (const item of imageItems) {
+  for (const item of remainingImageItems(imageItems, imageState)) {
     if (item.label?.startsWith('[絵文字:')) {
       lines.push(item.label);
     } else {
-      lines.push(item.label ? `[画像: ${item.label}]` : '[画像]');
+      lines.push(item.label ?? '[画像]');
     }
   }
 
@@ -146,13 +157,21 @@ export function buildPreviewText(message, config) {
   return lines.length > 0 ? lines.join('\n') : '[印刷できる本文がありません]';
 }
 
-function printTextBlock(printer, text, warnings) {
+async function printTextBlock(printer, text, warnings, options = {}) {
   const printableText = formatDiscordMarkdownForPrint(text);
   if (!printableText.trim()) return;
 
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
+    const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
+    if (imageResult.applied) continue;
+    if (imageResult.error) {
+      printTextLine(printer, `[画像コマンドエラー: ${imageResult.error}]`, warnings);
+      warnings.push(`画像コマンドエラー: ${imageResult.error}`);
+      continue;
+    }
+
     const receiptResult = applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState);
     if (receiptResult.applied) continue;
     if (receiptResult.error) {
@@ -206,7 +225,7 @@ function printTextBlock(printer, text, warnings) {
   printer.feed(1);
 }
 
-function renderTextPreview(text) {
+function renderTextPreview(text, options = {}) {
   const printableText = formatDiscordMarkdownForPrint(text);
   if (!printableText.trim()) return [];
 
@@ -214,6 +233,13 @@ function renderTextPreview(text) {
   const lines = [];
 
   for (const rawLine of printableText.trim().split(/\r?\n/)) {
+    const imageResult = applyPreviewInlineImageCommand(lines, rawLine, options);
+    if (imageResult.applied) continue;
+    if (imageResult.error) {
+      lines.push(`[画像コマンドエラー: ${imageResult.error}]`);
+      continue;
+    }
+
     const receiptResult = applyPreviewReceiptCommand(lines, rawLine, layoutState);
     if (receiptResult.applied) continue;
     if (receiptResult.error) {
@@ -790,6 +816,84 @@ function printTextInline(printer, text, warnings) {
   printer.text(text);
 }
 
+function createInlineImageState() {
+  return {
+    printedAttachmentIndexes: new Set()
+  };
+}
+
+async function applyInlineImageCommand(printer, line, warnings, options) {
+  const command = parseInlineImageCommandSafe(line, options.prefix);
+  if (command?.error) return { applied: false, error: command.error };
+  if (!command) return { applied: false };
+
+  const item = findAttachmentImageItem(options.imageItems, command.index);
+  if (!item) {
+    return { applied: false, error: `添付画像${command.index}がありません` };
+  }
+
+  await printImageItems(printer, [item], options.config, warnings, {
+    maxWidthDots: command.widthPercent
+      ? Math.max(1, Math.round(options.config.printWidthDots * command.widthPercent / 100))
+      : undefined
+  });
+  options.imageState?.printedAttachmentIndexes.add(command.index);
+  return { applied: true };
+}
+
+function applyPreviewInlineImageCommand(lines, line, options) {
+  const command = parseInlineImageCommandSafe(line, options.prefix);
+  if (command?.error) return { applied: false, error: command.error };
+  if (!command) return { applied: false };
+
+  const item = findAttachmentImageItem(options.imageItems, command.index);
+  if (!item) {
+    return { applied: false, error: `添付画像${command.index}がありません` };
+  }
+
+  const sizeText = command.widthPercent ? ` ${command.widthPercent}%` : '';
+  lines.push(`${item.label ?? `[画像${command.index}]`}${sizeText}`);
+  options.imageState?.printedAttachmentIndexes.add(command.index);
+  return { applied: true };
+}
+
+function parseInlineImageCommand(line, prefix = '!') {
+  const escapedPrefix = escapeRegex(String(prefix || '!'));
+  const match = String(line).trim().match(new RegExp(`^${escapedPrefix}(?:img|image)\\s+(\\d+)(?:\\s+(\\d{1,3})%?)?$`, 'i'));
+  if (!match) return null;
+
+  const index = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(index) || index < 1) return null;
+  const widthPercent = match[2] === undefined ? null : Number.parseInt(match[2], 10);
+  if (widthPercent !== null && (!Number.isFinite(widthPercent) || widthPercent < 1 || widthPercent > 100)) {
+    throw new Error('画像サイズは1%から100%で指定してください');
+  }
+  return { index, widthPercent };
+}
+
+function parseInlineImageCommandSafe(line, prefix = '!') {
+  try {
+    return parseInlineImageCommand(line, prefix);
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+function findAttachmentImageItem(imageItems = [], index) {
+  return imageItems.find((item) => item.source === 'attachment' && item.attachmentIndex === index) ?? null;
+}
+
+function remainingImageItems(imageItems = [], imageState = createInlineImageState()) {
+  return imageItems.filter((item) => {
+    if (item.source !== 'attachment') return true;
+    return !imageState.printedAttachmentIndexes.has(item.attachmentIndex);
+  });
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function parseDiscordStyleTokens(line) {
   if (/^\*+$/.test(line)) {
     return [{ text: line, bold: false, underline: false }];
@@ -827,13 +931,14 @@ function parseDiscordStyleTokens(line) {
   return tokens.length > 0 ? tokens : [{ text: line, bold: false, underline: false }];
 }
 
-async function printImageItems(printer, imageItems, config, warnings) {
+async function printImageItems(printer, imageItems, config, warnings, options = {}) {
+  const maxWidth = Math.min(config.printWidthDots, options.maxWidthDots ?? config.printWidthDots);
   for (const item of imageItems) {
     try {
       if (item.label) printTextLine(printer, item.label, warnings);
       const bytes = await fetchFirstImage(item.urls ?? [item.url], config);
       await printer.image(bytes, {
-        maxWidth: config.printWidthDots,
+        maxWidth,
         dither: config.imageDitherMode,
       });
     } catch (error) {
@@ -874,7 +979,7 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
     const { text, imageItems, urls } = extractMessageContent(snapshot);
 
     printTextLine(printer, '[転送メッセージ]', warnings);
-    printTextBlock(printer, text, warnings);
+    await printTextBlock(printer, text, warnings);
 
     if (config.printUrlQr && urls.length > 0) {
       for (const url of urls) {
@@ -1167,10 +1272,14 @@ function extractMessageContent(message) {
     return `:emoji_${codepointName}:`;
   });
 
+  let attachmentImageIndex = 0;
   for (const attachment of valuesOf(message.attachments)) {
     if (isImageAttachment(attachment)) {
+      attachmentImageIndex += 1;
       imageItems.push({
-        label: `[画像: ${attachment.name || attachment.id}]`,
+        source: 'attachment',
+        attachmentIndex: attachmentImageIndex,
+        label: `[画像${attachmentImageIndex}: ${attachment.name || attachment.id}]`,
         url: attachment.url,
       });
     }

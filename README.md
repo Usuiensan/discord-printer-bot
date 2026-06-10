@@ -148,6 +148,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 - `!left` / `!center` / `!right`: 揃え位置
 - `!align left|center|right`: 揃え位置
 - `!row 左側 | 右側`: 同じ行に左寄せテキストと右寄せテキストを印字
+- `!img 1`: 1番目の添付画像をその位置に印字。指定した添付画像は末尾で重複印字しません
+- `!img 1 50%`: 1番目の添付画像を紙幅の50%以内で印字。`50` だけでも指定できます
 - `!rule -` / `!rule *`: 現在の文字幅いっぱいに区切り線を印字
 - `!blank 2`: 空行
 - `!box text`: `* text *` 形式の注意書き
