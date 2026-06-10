@@ -29,6 +29,15 @@ function optionalEnv(name, fallback) {
   return value || fallback;
 }
 
+function listEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
@@ -55,6 +64,9 @@ export const config = {
   qrModuleSize: intEnv('QR_MODULE_SIZE', 6),
   qrErrorCorrection: optionalEnv('QR_ERROR_CORRECTION', 'M'),
   messageCommandPrefix: optionalEnv('MESSAGE_COMMAND_PREFIX', '!'),
+  rawEscposUserIds: listEnv('RAW_ESCPOS_USER_IDS'),
+  rawEscposAdminUserIds: listEnv('RAW_ESCPOS_ADMIN_USER_IDS'),
+  rawEscposMaxBytes: intEnv('RAW_ESCPOS_MAX_BYTES', 4096),
   printedReaction: optionalEnv('PRINTED_REACTION', '✅'),
   printNearEndReaction: optionalEnv('PRINT_NEAR_END_REACTION', '🧻'),
   printErrorReaction: optionalEnv('PRINT_ERROR_REACTION', '⚠️')

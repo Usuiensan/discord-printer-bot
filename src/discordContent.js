@@ -1,12 +1,13 @@
 import emojiRegex from 'emoji-regex';
 import sharp from 'sharp';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
-import { appendSymbolItems, extractSymbolMessageCommands } from './symbolContent.js';
+import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLines } from './symbolContent.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
+const LITERAL_TEXT_PREFIX = '\u0000LITERAL\u0000';
 
 export async function buildPrintJob(message, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
@@ -130,7 +131,11 @@ export async function appendDiscordHeader(printer, message, config, options = {}
 
 export function buildPreviewText(message, config) {
   const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
-  const { text, imageItems, urls } = extractMessageContent({ ...message, content });
+  const symbolExtraction = extractSymbolMessageCommands(content, config.messageCommandPrefix);
+  const contentMessage = symbolExtraction.commands.length > 0
+    ? { ...message, content: symbolExtraction.text }
+    : { ...message, content };
+  const { text, imageItems, urls } = extractMessageContent(contentMessage);
   const imageState = createInlineImageState();
   const lines = renderTextPreview(text, {
     prefix: config.messageCommandPrefix,
@@ -154,7 +159,38 @@ export function buildPreviewText(message, config) {
     lines.push(`[スタンプ: ${sticker.name ?? sticker.id}]`);
   }
 
+  lines.push(...formatSymbolPreviewLines(symbolExtraction.commands));
+
   return lines.length > 0 ? lines.join('\n') : '[印刷できる本文がありません]';
+}
+
+export async function buildPreviewImage(message, config) {
+  const preview = buildPreviewText(message, config);
+  const lines = preview
+    .split(/\r?\n/)
+    .flatMap((line) => wrapText(line, 42));
+  const padding = 16;
+  const fontSize = 18;
+  const lineHeight = 24;
+  const width = config.printWidthDots ?? 384;
+  const height = Math.max(80, padding * 2 + lines.length * lineHeight);
+  const fontFace = systemFontFaceCss();
+  const tspans = lines.map((line, index) => {
+    const y = padding + fontSize + index * lineHeight;
+    return `<text x="${padding}" y="${y}" xml:space="preserve">${escapeXml(line)}</text>`;
+  }).join('\n');
+
+  const svg = Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <style>
+    ${fontFace}
+    text { font-family: HeaderFont, "MS Gothic", monospace; font-size: ${fontSize}px; fill: #000; }
+  </style>
+  <rect width="100%" height="100%" fill="white"/>
+  ${tspans}
+</svg>`);
+
+  return sharp(svg).png().toBuffer();
 }
 
 async function printTextBlock(printer, text, warnings, options = {}) {
@@ -164,6 +200,11 @@ async function printTextBlock(printer, text, warnings, options = {}) {
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
+    if (rawLine.startsWith(LITERAL_TEXT_PREFIX)) {
+      printTextLine(printer, rawLine.slice(LITERAL_TEXT_PREFIX.length), warnings);
+      continue;
+    }
+
     const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -233,6 +274,11 @@ function renderTextPreview(text, options = {}) {
   const lines = [];
 
   for (const rawLine of printableText.trim().split(/\r?\n/)) {
+    if (rawLine.startsWith(LITERAL_TEXT_PREFIX)) {
+      lines.push(previewLiteralText(rawLine.slice(LITERAL_TEXT_PREFIX.length)));
+      continue;
+    }
+
     const imageResult = applyPreviewInlineImageCommand(lines, rawLine, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -783,6 +829,10 @@ function previewPrintableText(text) {
   return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).text;
 }
 
+function previewLiteralText(text) {
+  return normalizePrinterTextDetailed(text).text;
+}
+
 function stripPreviewCommand(content, prefix) {
   const trimmed = String(content ?? '').trimStart();
   const command = `${prefix}preview`;
@@ -835,7 +885,8 @@ async function applyInlineImageCommand(printer, line, warnings, options) {
   await printImageItems(printer, [item], options.config, warnings, {
     maxWidthDots: command.widthPercent
       ? Math.max(1, Math.round(options.config.printWidthDots * command.widthPercent / 100))
-      : undefined
+      : undefined,
+    printLabel: !command.noText
   });
   options.imageState?.printedAttachmentIndexes.add(command.index);
   return { applied: true };
@@ -852,23 +903,25 @@ function applyPreviewInlineImageCommand(lines, line, options) {
   }
 
   const sizeText = command.widthPercent ? ` ${command.widthPercent}%` : '';
-  lines.push(`${item.label ?? `[画像${command.index}]`}${sizeText}`);
+  const label = command.noText ? `[画像${command.index}: ラベルなし]` : (item.label ?? `[画像${command.index}]`);
+  lines.push(`${label}${sizeText}`);
   options.imageState?.printedAttachmentIndexes.add(command.index);
   return { applied: true };
 }
 
 function parseInlineImageCommand(line, prefix = '!') {
   const escapedPrefix = escapeRegex(String(prefix || '!'));
-  const match = String(line).trim().match(new RegExp(`^${escapedPrefix}(?:img|image)\\s+(\\d+)(?:\\s+(\\d{1,3})%?)?$`, 'i'));
+  const match = String(line).trim().match(new RegExp(`^${escapedPrefix}(img-notext|image-notext|img|image)\\s+(\\d+)(?:\\s+(\\d{1,3})%?)?$`, 'i'));
   if (!match) return null;
 
-  const index = Number.parseInt(match[1], 10);
+  const commandName = match[1].toLowerCase();
+  const index = Number.parseInt(match[2], 10);
   if (!Number.isFinite(index) || index < 1) return null;
-  const widthPercent = match[2] === undefined ? null : Number.parseInt(match[2], 10);
+  const widthPercent = match[3] === undefined ? null : Number.parseInt(match[3], 10);
   if (widthPercent !== null && (!Number.isFinite(widthPercent) || widthPercent < 1 || widthPercent > 100)) {
     throw new Error('画像サイズは1%から100%で指定してください');
   }
-  return { index, widthPercent };
+  return { index, widthPercent, noText: commandName.endsWith('-notext') };
 }
 
 function parseInlineImageCommandSafe(line, prefix = '!') {
@@ -933,9 +986,10 @@ function parseDiscordStyleTokens(line) {
 
 async function printImageItems(printer, imageItems, config, warnings, options = {}) {
   const maxWidth = Math.min(config.printWidthDots, options.maxWidthDots ?? config.printWidthDots);
+  const printLabel = options.printLabel ?? true;
   for (const item of imageItems) {
     try {
-      if (item.label) printTextLine(printer, item.label, warnings);
+      if (printLabel && item.label) printTextLine(printer, item.label, warnings);
       const bytes = await fetchFirstImage(item.urls ?? [item.url], config);
       await printer.image(bytes, {
         maxWidth,
@@ -1246,7 +1300,9 @@ function extractMessageContent(message) {
   const imageItems = [];
   const seenEmojiImages = new Set();
   let text = message.content ?? '';
-  const urls = extractUrls(text);
+  const urls = extractUrls(stripCodeBlocksForUrlExtraction(text));
+  const protectedCodeBlocks = protectCodeBlocks(text);
+  text = protectedCodeBlocks.text;
 
   text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
     pushUniqueEmojiImage(imageItems, seenEmojiImages, {
@@ -1271,6 +1327,8 @@ function extractMessageContent(message) {
     });
     return `:emoji_${codepointName}:`;
   });
+
+  text = restoreProtectedCodeBlocks(text, protectedCodeBlocks.blocks);
 
   let attachmentImageIndex = 0;
   for (const attachment of valuesOf(message.attachments)) {
@@ -1395,8 +1453,11 @@ function formatDiscordMarkdownForPrint(text) {
 }
 
 function formatCodeBlockLiteral(code, language) {
-  const prefix = language ? `\`\`\`${language}\n` : '```\n';
-  return `${prefix}${code.replace(/\s+$/g, '')}\n\`\`\``;
+  return code
+    .replace(/\s+$/g, '')
+    .split(/\r?\n/)
+    .map((line) => `${LITERAL_TEXT_PREFIX}${line}`)
+    .join('\n');
 }
 
 function valuesOf(collection) {
@@ -1419,6 +1480,24 @@ function extractUrls(text) {
   }
 
   return urls;
+}
+
+function stripCodeBlocksForUrlExtraction(text) {
+  return String(text ?? '').replace(/```[a-zA-Z0-9_-]*\n?[\s\S]*?```/g, '');
+}
+
+function protectCodeBlocks(text) {
+  const blocks = [];
+  const protectedText = String(text ?? '').replace(/```[a-zA-Z0-9_-]*\n?[\s\S]*?```/g, (match) => {
+    const index = blocks.length;
+    blocks.push(match);
+    return `\u0000PROTECTEDCODE${index}\u0000`;
+  });
+  return { text: protectedText, blocks };
+}
+
+function restoreProtectedCodeBlocks(text, blocks) {
+  return text.replace(/\u0000PROTECTEDCODE(\d+)\u0000/g, (_match, index) => blocks[Number(index)] ?? '');
 }
 
 function trimUrl(url) {

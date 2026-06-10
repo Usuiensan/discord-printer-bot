@@ -69,7 +69,9 @@ export function appendSymbolItems(printer, commands, config) {
   const items = Array.isArray(commands) ? commands : [commands];
   if (items.length === 0) return;
 
-  printer.bold(true).line(items.length > 1 ? '[CODE PRINT x' + items.length + ']' : '[CODE PRINT]').bold(false);
+  if (items.some((item) => item.printText !== false)) {
+    printer.bold(true).line(items.length > 1 ? '[CODE PRINT x' + items.length + ']' : '[CODE PRINT]').bold(false);
+  }
 
   for (const [index, item] of items.entries()) {
     try {
@@ -80,16 +82,18 @@ export function appendSymbolItems(printer, commands, config) {
   }
 }
 
-function printSymbolItem(printer, { type, data, compositeData, lineType }, config, index, total) {
+function printSymbolItem(printer, { type, data, compositeData, lineType, printText = true }, config, index, total) {
   validateSymbolInput(type, data, compositeData, config);
 
-  if (total > 1) {
+  if (printText && total > 1) {
     printer.feed(index === 0 ? 0 : 1);
     printer.line(`#${index + 1}/${total}`);
   }
-  printer.line(typeLabel(type));
-  printer.line(data);
-  printer.feed(1);
+  if (printText) {
+    printer.line(typeLabel(type));
+    printer.line(data);
+    printer.feed(1);
+  }
 
   if (ONE_D_TYPES.has(type)) {
     printer.barcode(type, prepareOneDimensionalData(type, data), barcodeOptionsFor(type, data, config));
@@ -111,12 +115,46 @@ function printSymbolItem(printer, { type, data, compositeData, lineType }, confi
   }
 }
 
+export function formatSymbolPreviewLines(commands) {
+  const items = Array.isArray(commands) ? commands : [commands];
+  if (items.length === 0) return [];
+
+  const lines = [];
+  if (items.some((item) => item.printText !== false)) {
+    lines.push(items.length > 1 ? `[CODE PRINT x${items.length}]` : '[CODE PRINT]');
+  }
+  for (const [index, item] of items.entries()) {
+    if (item.printText !== false) {
+      if (items.length > 1) lines.push(`#${index + 1}/${items.length}`);
+      lines.push(typeLabel(item.type));
+      lines.push(item.data);
+    }
+    lines.push(symbolPlaceholder(item));
+  }
+  return lines;
+}
+
+function symbolPlaceholder({ type, data, compositeData, lineType }) {
+  if (type === 'qr') return `[QR: ${data}]`;
+  if (type === 'pdf417') return `[PDF417: ${data}]`;
+  if (type === 'maxicode') return `[MaxiCode: ${data}]`;
+  if (type === 'composite') return `[Composite: ${lineType || 'gs1_databar_omni'} ${data} + ${compositeData}]`;
+  return `[Barcode: ${type} ${data}]`;
+}
+
 export function parseSymbolMessageCommands(content, prefix = '!') {
   const trimmed = content.trim();
   if (!trimmed.startsWith(prefix)) return null;
 
   const commands = [];
+  let inCodeBlock = false;
   for (const line of trimmed.split(/\r?\n/)) {
+    if (isCodeBlockFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+
     const command = parseSymbolCommandLine(line, prefix);
     if (command) commands.push(command);
   }
@@ -127,8 +165,20 @@ export function parseSymbolMessageCommands(content, prefix = '!') {
 export function extractSymbolMessageCommands(content, prefix = '!') {
   const commands = [];
   const textLines = [];
+  let inCodeBlock = false;
 
   for (const line of String(content ?? '').split(/\r?\n/)) {
+    if (isCodeBlockFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      textLines.push(line);
+      continue;
+    }
+
+    if (inCodeBlock) {
+      textLines.push(line);
+      continue;
+    }
+
     const command = parseSymbolCommandLine(line, prefix);
     if (command) {
       commands.push(command);
@@ -143,6 +193,10 @@ export function extractSymbolMessageCommands(content, prefix = '!') {
   };
 }
 
+function isCodeBlockFence(line) {
+  return /^```/.test(String(line).trim());
+}
+
 export function parseSymbolMessageCommand(content, prefix = '!') {
   const commands = parseSymbolMessageCommands(content, prefix);
   if (!commands) return null;
@@ -155,18 +209,20 @@ function parseSymbolCommandLine(line, prefix = '!') {
   if (!trimmed.startsWith(prefix)) return null;
 
   const body = trimmed.slice(prefix.length).trim();
-  const match = body.match(/^(print-code|code|コード|barcode|qr)\b\s*([\s\S]*)$/i);
+  const match = body.match(/^(print-code-notext|code-notext|barcode-notext|qr-notext|print-code|code|コード|barcode|qr)\b\s*([\s\S]*)$/i);
   if (!match) return null;
 
   const command = match[1].toLowerCase();
+  const printText = !command.endsWith('-notext');
   const rest = match[2].trim();
-  if (command === 'qr') {
+  if (command === 'qr' || command === 'qr-notext') {
     if (!rest) throw new Error(`使い方: ${prefix}qr https://example.com`);
     return {
       type: 'qr',
       data: rest,
       compositeData: '',
-      lineType: ''
+      lineType: '',
+      printText
     };
   }
 
@@ -179,7 +235,8 @@ function parseSymbolCommandLine(line, prefix = '!') {
     type: normalizeTypeToken(typeToken),
     data: dataParts.join(' '),
     compositeData: '',
-    lineType: ''
+    lineType: '',
+    printText
   };
 }
 

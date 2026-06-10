@@ -1,9 +1,9 @@
-import { Client, Events, GatewayIntentBits, MessageType, Partials } from 'discord.js';
+import { AttachmentBuilder, Client, Events, GatewayIntentBits, MessageType, Partials } from 'discord.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
-import { buildMemberJoinPrintJob, buildPreviewText, buildPrintJob } from './discordContent.js';
+import { buildMemberJoinPrintJob, buildPreviewImage, buildPrintJob } from './discordContent.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +129,22 @@ function enqueueReprint(message, targetMessage) {
       await markPrintSuccess(message, hasNearEndWarning());
       console.log(`Reprinted message ${targetMessage.id} requested by ${message.author.tag}`);
     }
+  });
+}
+
+function enqueueRawEscposPrint(message, rawCommand) {
+  return enqueuePrintJob(message, 'raw-escpos', async () => {
+    let retryNotified = false;
+    await sendRawToPrinter(rawCommand.bytes, config.printerName, {
+      ...config,
+      onRetry: async (retry) => {
+        if (retryNotified) return;
+        retryNotified = true;
+        await markPrintRetry(message, retry);
+      }
+    });
+    await markPrintSuccess(message, hasNearEndWarning());
+    console.log(`Printed raw ESC/POS ${rawCommand.bytes.length} byte(s) requested by ${message.author.tag}`);
   });
 }
 
@@ -326,6 +342,13 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
+    const rawEscposCommand = parseRawEscposMessageCommand(message);
+    if (rawEscposCommand) {
+      await addReaction(message, '🧪');
+      enqueueRawEscposPrint(message, rawEscposCommand);
+      return;
+    }
+
   } catch (error) {
     await markPrintFailure(message, error.message);
     return;
@@ -353,13 +376,85 @@ function isPreviewMessageCommand(message) {
 }
 
 async function replyWithPreview(message) {
-  const preview = buildPreviewText(message, config);
-  const body = preview.length > 1800 ? `${preview.slice(0, 1800)}\n...省略` : preview;
-  await replyToMessage(message, `印刷プレビュー:\n\`\`\`text\n${escapeCodeBlock(body)}\n\`\`\``);
+  const previewPng = await buildPreviewImage(message, config);
+  const attachment = new AttachmentBuilder(previewPng, { name: 'preview.png' });
+  await message.reply({
+    content: '印刷プレビュー:',
+    files: [attachment],
+    allowedMentions: { repliedUser: false }
+  });
 }
 
-function escapeCodeBlock(value) {
-  return String(value).replace(/```/g, '`\\`\\`');
+function parseRawEscposMessageCommand(message) {
+  const content = message.content ?? '';
+  const trimmed = content.trimStart();
+  const prefix = config.messageCommandPrefix;
+  if (!trimmed.startsWith(prefix)) return null;
+
+  const body = trimmed.slice(prefix.length).trim();
+  const match = body.match(/^(?:raw-escpos|escpos-raw|raw)\b\s*([\s\S]*)$/i);
+  if (!match) return null;
+
+  const userId = message.author.id;
+  if (!config.rawEscposUserIds.includes(userId) && !config.rawEscposAdminUserIds.includes(userId)) {
+    throw new Error('raw ESC/POS 印刷は許可ユーザーのみ実行できます。');
+  }
+
+  const bytes = parseRawEscposHexPayload(match[1]);
+  if (bytes.length === 0) {
+    throw new Error(`使い方: ${prefix}raw-escpos 1B 40 48 65 6C 6C 6F 0A`);
+  }
+  if (bytes.length > config.rawEscposMaxBytes) {
+    throw new Error(`raw ESC/POS は最大 ${config.rawEscposMaxBytes} bytes までです。`);
+  }
+
+  const dangerous = findDangerousRawEscposPatterns(bytes);
+  const isAdmin = config.rawEscposAdminUserIds.includes(userId);
+  if (dangerous.length > 0 && !isAdmin) {
+    throw new Error(`このraw ESC/POSには制限付きコマンドが含まれます: ${dangerous.join(', ')}`);
+  }
+
+  return { bytes };
+}
+
+function parseRawEscposHexPayload(value) {
+  const withoutCodeFence = String(value ?? '')
+    .trim()
+    .replace(/^```[^\r\n]*\r?\n?/i, '')
+    .replace(/\r?\n?```\s*$/i, '');
+  const normalizedInput = withoutCodeFence.replace(/0x/gi, '');
+  if (/[^0-9a-fA-F\s,;:_-]/.test(normalizedInput)) {
+    throw new Error('raw ESC/POS は16進数と区切り文字だけで指定してください。コメントや通常文字は入れられません。');
+  }
+  const normalized = normalizedInput.replace(/[^0-9a-fA-F]/g, '');
+
+  if (normalized.length === 0) return Buffer.alloc(0);
+  if (normalized.length % 2 !== 0) {
+    throw new Error('16進数の桁数が奇数です。1 byte は2桁で指定してください。');
+  }
+  return Buffer.from(normalized, 'hex');
+}
+
+function findDangerousRawEscposPatterns(bytes) {
+  const findings = new Set();
+  for (let index = 0; index < bytes.length - 1; index += 1) {
+    const a = bytes[index];
+    const b = bytes[index + 1];
+    const c = bytes[index + 2];
+    const d = bytes[index + 3];
+    if (a === 0x10 && (b === 0x04 || b === 0x05)) findings.add('DLE realtime/status');
+    if (a === 0x1b && b === 0x3d) findings.add('ESC = peripheral select');
+    if (a === 0x1b && b === 0x63 && [0x33, 0x34, 0x35].includes(c)) findings.add('ESC c device setting');
+    if (a === 0x1d && b === 0x49) findings.add('GS I printer ID/status');
+    if (a === 0x1d && b === 0x28 && c === 0x45) findings.add('GS ( E user setting/NV');
+    if (a === 0x1c && b === 0x28 && c === 0x45) findings.add('FS ( E user setting/NV');
+    if (a === 0x1d && b === 0x28 && c === 0x4c && isNvGraphicsFunction(d)) findings.add('GS ( L NV graphics');
+  }
+  return Array.from(findings);
+}
+
+function isNvGraphicsFunction(value) {
+  return [0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42].includes(value);
 }
 
 function isPrintableUserMessage(message) {
