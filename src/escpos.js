@@ -135,6 +135,7 @@ export class EscPosBuilder {
     const stops = columns
       .map((value) => clampByte(value))
       .filter((value) => value > 0)
+      .sort((a, b) => a - b)
       .slice(0, 32);
     this.raw(Buffer.from([ESC, 0x44, ...stops, 0]));
     return this;
@@ -182,7 +183,7 @@ export class EscPosBuilder {
   }
 
   relativePosition(dots = 0) {
-    const n = clampWord(dots);
+    const n = clampRelativeWord(dots);
     this.raw(Buffer.from([ESC, 0x5c, n & 0xff, (n >> 8) & 0xff]));
     return this;
   }
@@ -193,7 +194,7 @@ export class EscPosBuilder {
   }
 
   pagePrint() {
-    this.raw(Buffer.from([ESC, 0x0c]));
+    this.raw(Buffer.from([0x0c]));
     return this;
   }
 
@@ -239,7 +240,7 @@ export class EscPosBuilder {
   }
 
   pageRelativeVertical(dots = 0) {
-    const n = clampWord(dots);
+    const n = clampRelativeWord(dots);
     this.raw(Buffer.from([GS, 0x5c, n & 0xff, (n >> 8) & 0xff]));
     return this;
   }
@@ -278,9 +279,14 @@ export class EscPosBuilder {
       return this;
     }
 
-    const cutMode = mode === 'full' ? 0x41 : 0x42;
     this.feed(3);
-    this.raw(Buffer.from([GS, 0x56, cutMode, 0]));
+    if (mode === 'full') {
+      this.raw(Buffer.from([GS, 0x56, 0x41, 0]));
+    } else if (mode === 'partial3') {
+      this.raw(Buffer.from([ESC, 0x6d]));
+    } else {
+      this.raw(Buffer.from([ESC, 0x69]));
+    }
     return this;
   }
 
@@ -301,6 +307,7 @@ export class EscPosBuilder {
       nw7: 71,
       code93: 72,
       code128: 73,
+      code128c: 73,
       gs1_128: 74,
       gs1_databar_omni: 75,
       gs1_databar_truncated: 76,
@@ -506,49 +513,64 @@ function clampWord(value) {
   return Math.min(Math.max(number, 0), 65535);
 }
 
+function clampRelativeWord(value) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(Math.max(number, 0), 0x7fff);
+}
+
 function normalizeCommandName(value) {
   return String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
 }
 
 export function normalizePrinterText(value) {
-  return value
-    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
-    .replace(/[\u2500\u2501\u2574\u2576\u2578\u257A]/g, '-')
-    .replace(/[\u2502\u2503\u2575\u2577\u2579\u257B]/g, '|')
-    .replace(/[\u250C\u250D\u250E\u250F\u2510\u2511\u2512\u2513\u2514\u2515\u2516\u2517\u2518\u2519\u251A\u251B]/g, '+')
-    .replace(/[\u251C-\u254B]/g, '+')
-    .replace(/[\u00A0\u2000-\u200B\u202F\u205F]/g, ' ')
-    .replace(/\u301C/g, '~')
-    .replace(/\uFF5E/g, '~');
+  return normalizePrinterTextDetailed(value).text;
 }
 
 export function findUnsupportedPrinterChars(value) {
+  return normalizePrinterTextDetailed(value).replacements.map((item) => ({
+    char: item.from,
+    codePoint: `U+${item.from.codePointAt(0).toString(16).toUpperCase()}`,
+    count: item.count,
+    replacement: item.to
+  }));
+}
+
+export function normalizePrinterTextDetailed(value) {
+  const counts = new Map();
+  const text = Array.from(String(value))
+    .map((char) => {
+      const replacement = normalizePrinterChar(char);
+      if (replacement !== char) {
+        const key = `${char}\u0000${replacement}`;
+        counts.set(key, {
+          from: char,
+          to: replacement,
+          count: (counts.get(key)?.count ?? 0) + 1
+        });
+      }
+      return replacement;
+    })
+    .join('');
+
+  return {
+    text,
+    replacements: Array.from(counts.values())
+  };
+}
+
+function normalizePrinterTextDetailedLegacy(value) {
+  return normalizePrinterTextDetailed(value);
+}
+
+function findUnsupportedPrinterCharsLegacy(value) {
   const unsupported = new Map();
-  const normalized = normalizePrinterText(value);
+  const normalized = String(value);
 
   for (const char of Array.from(normalized)) {
     if (char === '\r' || char === '\n' || char === '\t') continue;
 
-    const encoded = iconv.encode(char, 'cp932');
-    let isSupported = false;
-
-    if (encoded.length === 1) {
-      const code = encoded[0];
-      if ((code >= 0x20 && code <= 0x7E) || (code >= 0xA1 && code <= 0xDF)) {
-        isSupported = true;
-      }
-    } else if (encoded.length === 2) {
-      const code = (encoded[0] << 8) | encoded[1];
-      if (code >= 0x8140 && code <= 0xEAAD) {
-        isSupported = true;
-      } else if (code >= 0xED40 && code <= 0xEEFC) {
-        isSupported = true;
-      } else if (code >= 0xFA40 && code <= 0xFC4E) {
-        isSupported = true;
-      }
-    }
-
-    if (!isSupported) {
+    if (normalizePrinterChar(char) !== char) {
       unsupported.set(char, (unsupported.get(char) ?? 0) + 1);
     }
   }
@@ -559,6 +581,74 @@ export function findUnsupportedPrinterChars(value) {
     count
   }));
 }
+
+function normalizePrinterChar(char) {
+  if (char === '\r' || char === '\n' || char === '\t') return char;
+  if (char === '\u00A0' || /[\u2000-\u200B\u202F\u205F]/.test(char)) return ' ';
+
+  if (isSupportedPrinterChar(char)) return char;
+
+  const fallback = PRINTER_CHAR_FALLBACKS.get(char);
+  if (fallback !== undefined) return fallback;
+
+  return '?';
+}
+
+function isSupportedPrinterChar(char) {
+  const encoded = iconv.encode(char, 'cp932');
+  const decoded = iconv.decode(encoded, 'cp932');
+  if (decoded !== char) return false;
+
+  if (encoded.length === 1) {
+    const code = encoded[0];
+    return (code >= 0x20 && code <= 0x7E) || (code >= 0xA1 && code <= 0xDF);
+  }
+
+  if (encoded.length === 2) {
+    const code = (encoded[0] << 8) | encoded[1];
+    return (
+      (code >= 0x8140 && code <= 0xEAAD) ||
+      (code >= 0xED40 && code <= 0xEEFC) ||
+      (code >= 0xFA40 && code <= 0xFC4E)
+    );
+  }
+
+  return false;
+}
+
+const PRINTER_CHAR_FALLBACKS = new Map([
+  // Add printer-specific substitutions here when a character cannot round-trip
+  // through CP932 or the TM-T70II built-in font. The bot reports these mappings
+  // to Discord as "from codepoint -> to codepoint" replacement warnings.
+  ['\u00A5', '\\'],
+  ['\u203C', '!!'],
+  ['\u2049', '!?'],
+  ['\uFE0E', ''],
+  ['\uFE0F', ''],
+  ['\u301C', '~'],
+  ['\uFF5E', '~'],
+  ['\u2212', '-'],
+  ['\u2010', '-'],
+  ['\u2011', '-'],
+  ['\u2012', '-'],
+  ['\u2013', '-'],
+  ['\u2014', '-'],
+  ['\u2015', '-'],
+  ['\uFE58', '-'],
+  ['\uFE63', '-'],
+  ['\uFF0D', '-'],
+  ['\u2500', '-'],
+  ['\u2501', '-'],
+  ['\u2502', '|'],
+  ['\u2503', '|'],
+  ['\u2514', '+'],
+  ['\u2518', '+'],
+  ['\u251C', '+'],
+  ['\u2524', '+'],
+  ['\u2534', '+'],
+  ['\u252C', '+'],
+  ['\u253C', '+']
+]);
 
 function shouldPrintBlack(pixel, x, y, dither) {
   if (dither === 'threshold') {

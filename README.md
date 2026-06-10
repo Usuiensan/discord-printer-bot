@@ -1,95 +1,69 @@
-# Discord Printer Bot for Epson TM-T70II 58mm
+# Discord レシートプリンタ bot 使い方
 
-Discord の指定チャンネルに投稿された内容を、USB 接続された Epson TM-T70II 58mm 幅プリンタへ即時印刷する bot です。
+指定チャンネルに投稿すると、Epson TM-T70II 58mm レシートプリンタへ印刷されます。
 
-## できること
+管理者向けのセットアップ、起動、権限設定は [ADMIN.md](ADMIN.md) を参照してください。
 
-- 指定 Discord チャンネルの新規メッセージを監視
-- メッセージ本文を ESC/POS のプリンタ内蔵フォントで印刷
-- 発言したユーザーのアイコンをディザ処理した疑似グレースケール画像として印刷
-- URL を本文として印刷し、プリンタ内蔵機能で QR コードとしても印刷
-- 通常メッセージコマンドから対応バーコード/二次元コードを印刷
-- カスタム絵文字、Unicode 絵文字、スタンプ、添付画像をディザ処理した疑似グレースケール画像として印刷
-- Windows に登録されたプリンタキューへ RAW ESC/POS データを送信
+## 基本
 
-## 前提
+普通にメッセージを投稿すると、その本文が印刷されます。
 
-- Windows PC
-- Node.js 20 以上
-- Epson TM-T70II が USB 接続され、Windows の「プリンターとスキャナー」に登録済み
-- Discord Developer Portal で作成した bot
-- bot の `MESSAGE CONTENT INTENT` が有効
+- URL は本文として印字され、設定が有効なら QR コードも印字されます
+- 添付画像、スタンプ、絵文字は画像として印字されます
+- 印刷完了後、bot がリアクションを付けます
+- 紙切れやプリンタエラー時は bot がエラーを返します
 
-## セットアップ
+コードブロック内では、コマンドや装飾を一切解釈しません。中身だけを通常テキストとして印字します。
 
-```powershell
-npm install
-Copy-Item .env.example .env
+````text
+```
+!print-code qr https://example.com
+!img 1
+**太字にならない**
+```
+````
+
+## プレビュー
+
+印刷せずに確認したい場合は、投稿の先頭に `!preview` を付けます。Discord に `preview.png` が返信されます。
+
+```text
+!preview
+!center
+領収書
+!row 小計 | ¥500
+!row 外税 | ¥40
+!bold on
+!size 2 1
+!row 合計 | ¥540
 ```
 
-もし `npm install` で `Cannot find module ... npm-cli.js` が出る場合は、PC の npm インストールが壊れています。Node.js 公式インストーラで Node.js を修復インストールしてから、もう一度 `npm install` を実行してください。
+## 画像
 
-`.env` を編集します。
+添付画像は通常、本文などの後にまとめて印刷されます。途中に挿入したい場合は `!img` を使います。
 
-- `DISCORD_TOKEN`: Discord bot token
-- `DISCORD_CHANNEL_ID`: 印刷したいチャンネル ID
-- `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
-- `PRINTER_NAME`: Windows のプリンタ名
-- `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
-- `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
-- `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
-- `CUT_MODE`: `none`、`partial`、`full`。通常は `partial` 推奨
-- `MERGE_SAME_USER_WINDOW_MS`: 同じユーザーの連投でヘッダーを省略する時間
-- `PRINT_AUTHOR_AVATAR`: 発言者アイコンを印刷するか
-- `AUTHOR_AVATAR_WIDTH_DOTS`: 発言者アイコンの印刷幅
-- `IMAGE_DITHER_MODE`: 画像変換方式。`ordered` は網点でグレーを表現、`threshold` は単純な白黒2値
-- `IMAGE_MAX_BYTES`: 画像ダウンロード上限。画像は印刷幅まで縮小されます
-- `PRINT_URL_QR`: URL を QR コードとして印刷するか
-- `QR_MODULE_SIZE`: QR コードのドットサイズ
-- `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
-- `PRINTED_REACTION`: 印刷完了後に bot が付けるリアクション絵文字
-- `PRINT_ERROR_REACTION`: 印刷失敗または一部スキップ時に bot が付けるリアクション絵文字
-
-プリンタ名は PowerShell で確認できます。
-
-```powershell
-Get-Printer | Select-Object Name
+```text
+上の文章
+!img 1
+下の文章
 ```
 
-## Discord 側の設定
+サイズ指定もできます。紙幅に対する割合です。
 
-1. Discord Developer Portal で bot を作成します。
-2. Bot 設定で `MESSAGE CONTENT INTENT` を有効にします。
-3. OAuth2 URL Generator で `bot` を選び、権限は最低限 `View Channels`、`Read Message History`、`Send Messages`、`Add Reactions` を付けます。
-4. bot をサーバーに招待します。
-5. Discord の開発者モードを有効にして、印刷対象チャンネルを右クリックし「IDをコピー」します。
-
-`Error: Used disallowed intents` が出る場合は、ほぼ `MESSAGE CONTENT INTENT` が無効です。Discord Developer Portal の `Bot` ページで `Privileged Gateway Intents` の `MESSAGE CONTENT INTENT` をオンにして保存し、`.env` の `DISCORD_TOKEN` が同じアプリの bot token か確認してください。
-
-## 実行
-
-```powershell
-npm start
+```text
+!img 1 50%
+!img 2 25
 ```
 
-## OPOS ADK for .NET 状態確認
+画像ファイル名のラベルを印字しない場合:
 
-紙切れやカバーオープンをより確実に検出したい場合は、EPSON OPOS ADK for .NET をインストールし、SetupPOS で TM-T70II を登録してください。登録した論理デバイス名を `.env` に設定します。
-
-```env
-OPOS_STATUS_ENABLED=true
-OPOS_LOGICAL_NAME=TM-T70II
+```text
+!img-notext 1 50%
 ```
 
-単体確認:
+## バーコード・QRコード
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -LogicalName "TM-T70II"
-```
-
-## コード印刷コマンド
-
-通常メッセージのコマンドでプリンタ内蔵コード印字を実行できます。
+プリンタ内蔵機能でコードを印字できます。
 
 ```text
 !qr https://example.com
@@ -98,25 +72,119 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 !print-code jan13 490123456789
 ```
 
-対応種別: UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
-
-## 本文内 ESC/POS 制御コマンド
-
-印刷本文の行頭に制御コマンドを書くと、その行は印字せず、後続の印刷設定を変更します。短縮形または `!escpos` 付きで使えます。
+本番用に、コード種別やデータ文字列を印字せずコード本体だけを印字したい場合:
 
 ```text
-!center
-中央揃えの文字
-!right
-右揃えの文字
-!left
-左揃えに戻す
+!qr-notext https://example.com
+!print-code-notext qr https://example.com
+!code-notext code128 ABC123
 ```
 
-よく使うコマンド:
+複数行を1投稿にまとめると、1つの印刷ジョブとして順番に印刷します。
+
+```text
+通常文の上
+!print-code qr https://example.com
+!print-code code128 ABC123
+通常文の下
+```
+
+短縮名:
+
+- `gs1128`: GS1-128
+- `databar`: GS1 DataBar Omnidirectional
+- `code128c`: CODE 128 Code Set C
+
+対応種別:
+UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
+
+### コード印刷コマンド一覧
+
+基本形:
+
+```text
+!print-code 種別 データ
+!code 種別 データ
+!barcode 種別 データ
+```
+
+文字説明を省いてコード本体だけ印字:
+
+```text
+!print-code-notext 種別 データ
+!code-notext 種別 データ
+!barcode-notext 種別 データ
+```
+
+QRだけの短縮形:
+
+```text
+!qr データ
+!qr-notext データ
+```
+
+使える種別名:
+
+| 種別                           | 別名                                                           | データ制約・注意                                                                              |
+| ------------------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `qr`                           | `qrcode`, `qr_code`                                            | 日本語やURL可。最大7089 bytes相当。                                                           |
+| `pdf417`                       | なし                                                           | 日本語可。最大928 bytes相当                                                                   |
+| `maxicode`                     | なし                                                           | 日本語可。最大138 bytes相当                                                                   |
+| `jan13`                        | `ean13`                                                        | 数字12桁または13桁が実用範囲                                                                  |
+| `jan8`                         | `ean8`                                                         | 数字7桁または8桁が実用範囲                                                                    |
+| `upc_a`                        | `upca`                                                         | 数字11桁または12桁が実用範囲                                                                  |
+| `upc_e`                        | `upce`                                                         | 数字11桁または12桁が実用範囲                                                                  |
+| `code39`                       | `code_39`                                                      | `0-9`, `A-Z`, スペース, `-`, `.`, `/`, `$`, `%`, `+` のみ。58mmでは約12文字まで推奨           |
+| `itf`                          | なし                                                           | 数字推奨。偶数桁推奨。58mmでは約18桁まで推奨                                                  |
+| `codabar`                      | `nw7`                                                          | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `code93`                       | `code_93`                                                      | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `code128`                      | `code_128`                                                     | ASCIIのみ。数字のみ偶数桁なら自動でCode Set C。58mmでは英数字約14文字、数字のみ約28桁まで推奨 |
+| `code128c`                     | `code128num`, `code128_numeric`                                | 数字のみ、偶数桁必須。58mmでは約28桁まで推奨                                                  |
+| `gs1_128`                      | `gs1128`, `gs1`                                                | ASCIIのみ。`(01)04901234567890` のようなAI括弧は自動で除去。58mmでは約28桁相当まで推奨        |
+| `gs1_databar_omni`             | `databar`, `gs1_databar`, `gs1databar`, `databar_omni`, `omni` | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `gs1_databar_truncated`        | `databar_truncated`                                            | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `gs1_databar_limited`          | `databar_limited`                                              | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `gs1_databar_expanded`         | `databar_expanded`                                             | ASCIIのみ。58mmでは約16文字まで推奨                                                           |
+| `gs1_databar_stacked`          | `databar_stacked`                                              | ASCIIのみ。2D GS1 DataBar系                                                                   |
+| `gs1_databar_stacked_omni`     | `databar_stacked_omni`                                         | ASCIIのみ。2D GS1 DataBar系                                                                   |
+| `gs1_databar_expanded_stacked` | `databar_expanded_stacked`                                     | ASCIIのみ。2D GS1 DataBar系                                                                   |
+| `composite`                    | なし                                                           | 現在の本文コマンドでは補助データ指定が限定的です。失敗する場合は管理者に相談                  |
+
+注意:
+
+- 1次元コードは紙幅に収まらない場合、印刷前にエラーになります。
+- 58mm/384dots前提の目安です。プリンタ設定や紙幅が違う場合、上限も変わります。
+- `code39` は長いIDに不向きです。長い英数字IDは `code128` か `qr` を使ってください。
+- JAN/EAN/UPCは桁数やチェックデジットが規格に合わないと、プリンタ側で印字されないことがあります。
+- QR/PDF417/MaxiCode以外のコードはASCIIのみです。日本語や絵文字は使えません。
+- コードブロック内の `!print-code` は実行されず、通常テキストとして印字されます。
+
+## 再印刷
+
+過去の投稿をもう一度印刷できます。
+
+```text
+!reprint 1513138512247918662
+!reprint https://discord.com/channels/サーバーID/チャンネルID/メッセージID
+```
+
+対象メッセージへの返信として `!reprint` だけ投稿することもできます。
+
+## レイアウト
+
+行頭に制御コマンドを書くと、その行は印字せず、後続の印刷設定を変更します。
+
+### 全コマンド一覧
 
 - `!left` / `!center` / `!right`: 揃え位置
 - `!align left|center|right`: 揃え位置
+- `!row 左側 | 右側`: 左寄せテキストと右寄せ金額を同じ行に印字
+- `!img 1`: 1番目の添付画像をその位置に印字。指定した画像は末尾で重複印字しません
+- `!img 1 50%`: 1番目の添付画像を紙幅の50%以内で印字。`50` だけでも可
+- `!img-notext 1 50%`: 画像ファイル名ラベルなしで画像だけ印字
+- `!rule -` / `!rule *`: 区切り線
+- `!blank 2`: 空行
+- `!box text`: `* text *` 形式の注意書き
 - `!bold on|off`: 太字
 - `**太字**`: Discord の太字をプリンタ太字で印刷
 - `!underline on|off|2`: 下線。`2` は太線
@@ -143,9 +211,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 - `!margin 0`: 左マージン
 - `!width 384`: 印字領域幅
 - `!motion 203 203`: 基本計算ピッチ
-- `!cut partial|full|none`: その場でカット
+- `!cut partial|partial3|full|none`: その場でカット
 - `!drawer 0 80 240`: キャッシュドロアー用パルス
 - `!buzzer 1 1 3`: ブザー
+
+例:
+
+```text
+!center
+領収書
+!left
+!rule -
+!row 商品A | ¥500
+!row 外税 | ¥40
+!bold on
+!size 2 1
+!row 合計 | ¥540
+!size 1 1
+!bold off
+```
 
 ページモード:
 
@@ -160,41 +244,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 !page end
 ```
 
-ページモードは機種・ドライバー・現在の状態により無視される命令があります。通常のレシート印字では `!left`、`!center`、`!right`、`!bold`、`!size`、`!cut` から使うのがおすすめです。
+注意:
 
-Discord からは、電源オフ、バッファクリア、NVメモリー書き込み/消去、メモリースイッチ変更、通信条件変更、リアルタイムステータス要求など、プリンタ設定や永続メモリーに影響する命令は実装しません。
+- `!row` は `!small` や `!size` の状態を見て右側を揃えます。倍率を大きくすると使える文字数は減ります。
+- `!img n` の番号は、その投稿に添付された画像だけを1始まりで数えます。絵文字画像や埋め込み画像は番号対象外です。
+- `!img-notext` は画像ラベルを印字しませんが、`!preview` では確認用に `[画像n: ラベルなし]` と表示します。
+- `!cut` はその場でカットします。転送メッセージや複数ブロックの途中で使うと途中で切れます。
+- ページモードは機種・ドライバー・現在状態により無視される命令があります。通常のレシートでは標準モードの `!left`、`!center`、`!right`、`!row`、`!bold`、`!size` を推奨します。
 
-## Windows 起動時に非表示で常駐
+## 上級者向けコマンド
 
-ログオン時に bot を非表示で起動するタスクを登録できます。
+raw ESC/POS 印刷は許可ユーザーだけが使えます。使えるかどうかは bot 管理者に確認してください。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-startup-task.ps1
+```text
+!raw-escpos 1B 40 48 65 6C 6C 6F 0A
 ```
 
-すぐに非表示起動したい場合:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\start-bot-hidden.ps1
-```
-
-停止:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\stop-bot.ps1
-```
-
-自動起動を解除して、起動中の bot も止める場合:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\uninstall-startup-task.ps1 -StopBot
-```
-
-ログは `logs\discord-printer-bot.out.log` と `logs\discord-printer-bot.err.log` に出力されます。
-
-## 注意
-
-- Unicode 絵文字は Twemoji CDN から画像を取得して印刷します。インターネット接続が必要です。
-- Discord のユーザーアイコン、スタンプ、添付画像も Discord CDN から取得します。
-- 動画、音声、PDF など画像ではない添付ファイルは印刷されません。
-- 日本語は Shift_JIS/CP932 と ESC/POS 漢字モードで送ります。プリンタ側の日本語フォント対応が必要です。
+raw ESC/POS は通常ヘッダー、通し番号、自動カットを追加しません。バイト列がそのままプリンタへ送られます。

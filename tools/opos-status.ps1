@@ -8,9 +8,23 @@ param(
 $ErrorActionPreference = "Stop"
 
 try {
-  Add-Type -AssemblyName Microsoft.PointOfService
+  Add-Type -AssemblyName Microsoft.PointOfService -ErrorAction Stop
 } catch {
-  throw "Microsoft.PointOfService assembly was not found. Install EPSON OPOS ADK for .NET and POS for .NET."
+  $pointOfServiceDll = @(
+    "$env:WINDIR\Microsoft.NET\assembly\GAC_MSIL\Microsoft.PointOfService\v4.0_*\Microsoft.PointOfService.dll",
+    "$env:WINDIR\assembly\GAC_MSIL\Microsoft.PointOfService\*\Microsoft.PointOfService.dll",
+    "$env:ProgramFiles\Microsoft Point Of Service\*\Microsoft.PointOfService.dll",
+    "${env:ProgramFiles(x86)}\Microsoft Point Of Service\*\Microsoft.PointOfService.dll"
+  ) |
+    ForEach-Object { Get-ChildItem -Path $_ -ErrorAction SilentlyContinue } |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1
+
+  if (-not $pointOfServiceDll) {
+    throw "Microsoft.PointOfService.dll was not found. Install Microsoft POS for .NET."
+  }
+
+  Add-Type -Path $pointOfServiceDll.FullName -ErrorAction Stop
 }
 
 $explorer = New-Object Microsoft.PointOfService.PosExplorer
@@ -38,7 +52,7 @@ try {
   }
 
   try {
-    $printer.CheckHealth([Microsoft.PointOfService.HealthCheckLevel]::External)
+    $null = $printer.CheckHealth([Microsoft.PointOfService.HealthCheckLevel]::Internal)
     $status.CheckHealthText = [string]$printer.CheckHealthText
   } catch {
     $status.CheckHealthText = $_.Exception.Message

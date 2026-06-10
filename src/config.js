@@ -29,11 +29,25 @@ function optionalEnv(name, fallback) {
   return value || fallback;
 }
 
+function listEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
   channelId: requireEnv('DISCORD_CHANNEL_ID'),
   printerName: requireEnv('PRINTER_NAME'),
+  printRetryAttempts: intEnv('PRINT_RETRY_ATTEMPTS', 8),
+  printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
+  printerMonitorEnabled: boolEnv('PRINTER_MONITOR_ENABLED', true),
+  printerMonitorIntervalMs: intEnv('PRINTER_MONITOR_INTERVAL_MS', 10000),
+  memberJoinPrintEnabled: boolEnv('MEMBER_JOIN_PRINT_ENABLED', true),
   oposStatusEnabled: boolEnv('OPOS_STATUS_ENABLED', false),
   oposLogicalName: optionalEnv('OPOS_LOGICAL_NAME', ''),
   oposClaimTimeoutMs: intEnv('OPOS_CLAIM_TIMEOUT_MS', 1000),
@@ -50,6 +64,10 @@ export const config = {
   qrModuleSize: intEnv('QR_MODULE_SIZE', 6),
   qrErrorCorrection: optionalEnv('QR_ERROR_CORRECTION', 'M'),
   messageCommandPrefix: optionalEnv('MESSAGE_COMMAND_PREFIX', '!'),
+  rawEscposUserIds: listEnv('RAW_ESCPOS_USER_IDS'),
+  rawEscposAdminUserIds: listEnv('RAW_ESCPOS_ADMIN_USER_IDS'),
+  rawEscposMaxBytes: intEnv('RAW_ESCPOS_MAX_BYTES', 4096),
   printedReaction: optionalEnv('PRINTED_REACTION', '✅'),
+  printNearEndReaction: optionalEnv('PRINT_NEAR_END_REACTION', '🧻'),
   printErrorReaction: optionalEnv('PRINT_ERROR_REACTION', '⚠️')
 };
