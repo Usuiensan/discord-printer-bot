@@ -307,6 +307,7 @@ export class EscPosBuilder {
       nw7: 71,
       code93: 72,
       code128: 73,
+      code128c: 73,
       gs1_128: 74,
       gs1_databar_omni: 75,
       gs1_databar_truncated: 76,
@@ -616,7 +617,14 @@ function isSupportedPrinterChar(char) {
 }
 
 const PRINTER_CHAR_FALLBACKS = new Map([
+  // Add printer-specific substitutions here when a character cannot round-trip
+  // through CP932 or the TM-T70II built-in font. The bot reports these mappings
+  // to Discord as "from codepoint -> to codepoint" replacement warnings.
   ['\u00A5', '\\'],
+  ['\u203C', '!!'],
+  ['\u2049', '!?'],
+  ['\uFE0E', ''],
+  ['\uFE0F', ''],
   ['\u301C', '~'],
   ['\uFF5E', '~'],
   ['\u2212', '-'],

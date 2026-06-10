@@ -1,14 +1,101 @@
 import emojiRegex from 'emoji-regex';
 import sharp from 'sharp';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
+import { appendSymbolItems, extractSymbolMessageCommands } from './symbolContent.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
+const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
 
 export async function buildPrintJob(message, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
   const warnings = [];
+
+  await appendDiscordHeader(printer, message, config, {
+    printHeader: options.printHeader,
+    printNumber: options.printNumber,
+    warnings
+  });
+
+  const symbolExtraction = extractSymbolMessageCommands(message.content ?? '', config.messageCommandPrefix);
+  const contentMessage = symbolExtraction.commands.length > 0
+    ? { ...message, content: symbolExtraction.text }
+    : message;
+  const { text, imageItems, urls } = extractMessageContent(contentMessage);
+
+  printTextBlock(printer, text, warnings);
+
+  if (config.printUrlQr && urls.length > 0) {
+    for (const url of urls) {
+      printTextLine(printer, '[URL QR]', warnings);
+      printer.qrCode(url, {
+        moduleSize: config.qrModuleSize,
+        errorCorrection: config.qrErrorCorrection,
+      });
+    }
+  }
+
+  await printImageItems(printer, imageItems, config, warnings);
+  await printStickers(printer, message, config, warnings);
+  await printForwardedSnapshots(printer, message, config, warnings);
+
+  if (symbolExtraction.commands.length > 0) {
+    appendSymbolItems(printer, symbolExtraction.commands, config);
+  }
+
+  if (!hasPrintableMessageContent(contentMessage) && symbolExtraction.commands.length === 0) {
+    printTextLine(printer, '[印刷できる本文がありません]', warnings);
+  }
+
+  printer.cut(config.cutMode);
+
+  return {
+    bytes: printer.build(),
+    warnings,
+  };
+}
+
+export async function buildMemberJoinPrintJob(member, config, options = {}) {
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const warnings = [];
+  const joinedAt = new Date();
+  const headerMessage = {
+    author: member.user,
+    member,
+    createdAt: joinedAt,
+    createdTimestamp: joinedAt.getTime()
+  };
+
+  await appendDiscordHeader(printer, headerMessage, config, {
+    printHeader: config.printHeader,
+    printNumber: options.printNumber,
+    warnings
+  });
+
+  printer.align('center');
+  printer.bold(true);
+  printer.size(2, 1);
+  printTextLine(printer, 'WELCOME', warnings);
+  printer.size(1, 1);
+  printTextLine(printer, '新しいメンバーが参加しました', warnings);
+  printer.bold(false);
+  printer.align('left');
+  printTextLine(printer, '-'.repeat(32), warnings);
+  printTextLine(printer, `名前: ${member.displayName ?? member.user.globalName ?? member.user.username}`, warnings);
+  printTextLine(printer, `ユーザーID: ${member.user.id}`, warnings);
+  if (member.user.tag) printTextLine(printer, `タグ: ${member.user.tag}`, warnings);
+  printTextLine(printer, '-'.repeat(32), warnings);
+  printer.cut(config.cutMode);
+
+  return {
+    bytes: printer.build(),
+    warnings
+  };
+}
+
+export async function appendDiscordHeader(printer, message, config, options = {}) {
+  const warnings = options.warnings ?? [];
   const printHeader = options.printHeader ?? config.printHeader;
 
   if (printHeader) {
@@ -16,7 +103,7 @@ export async function buildPrintJob(message, config, options = {}) {
       const headerImage = await buildAuthorHeaderImage(message, config, options.printNumber);
       await printer.image(headerImage, {
         maxWidth: config.printWidthDots,
-        dither: config.imageDitherMode
+        dither: config.imageDitherMode,
       });
     } catch (error) {
       console.error(`Failed to print author header for ${message.author.id}:`, error);
@@ -32,34 +119,7 @@ export async function buildPrintJob(message, config, options = {}) {
     }
   }
 
-  const { text, imageItems, urls } = extractMessageContent(message);
-
-  printTextBlock(printer, text, warnings);
-
-  if (config.printUrlQr && urls.length > 0) {
-    for (const url of urls) {
-      printTextLine(printer, '[URL QR]', warnings);
-      printer.qrCode(url, {
-        moduleSize: config.qrModuleSize,
-        errorCorrection: config.qrErrorCorrection
-      });
-    }
-  }
-
-  await printImageItems(printer, imageItems, config, warnings);
-  await printStickers(printer, message, config, warnings);
-  await printForwardedSnapshots(printer, message, config, warnings);
-
-  if (!hasPrintableMessageContent(message)) {
-    printTextLine(printer, '[印刷できる本文がありません]', warnings);
-  }
-
-  printer.cut(config.cutMode);
-
-  return {
-    bytes: printer.build(),
-    warnings
-  };
+  return warnings;
 }
 
 export function buildPreviewText(message, config) {
@@ -459,13 +519,16 @@ function normalizeAlignValue(value) {
 }
 
 function normalizeCommandName(value) {
-  return String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
 }
 
 function createLayoutState() {
   return {
     small: false,
-    sizeX: 1
+    sizeX: 1,
   };
 }
 
@@ -474,6 +537,11 @@ function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
     const command = parseReceiptLayoutCommand(line);
     if (!command) return { applied: false };
 
+    if (command.name === 'row') {
+      printReceiptRowCommand(printer, command.body, warnings, layoutState);
+      return { applied: true };
+    }
+
     for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
       printStyledTextLine(printer, outputLine, warnings);
     }
@@ -481,6 +549,35 @@ function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
   } catch (error) {
     return { applied: false, error: error.message };
   }
+}
+
+function printReceiptRowCommand(printer, body, warnings, layoutState) {
+  const separator = body.indexOf('|');
+  if (separator < 0) throw new Error('row needs "|" separator');
+
+  const left = body.slice(0, separator).trim();
+  const right = body.slice(separator + 1).trim();
+  const rightColumns = displayColumns(right);
+  const columns = currentLayoutColumns(layoutState);
+
+  if (!right || rightColumns >= columns - 1) {
+    for (const outputLine of formatReceiptRow(left, right, columns)) {
+      printStyledTextLine(printer, outputLine, warnings);
+    }
+    return;
+  }
+
+  const leftColumns = Math.max(1, columns - rightColumns - 1);
+  const leftLines = wrapText(left, leftColumns);
+  for (let index = 0; index < leftLines.length - 1; index += 1) {
+    printStyledTextLine(printer, leftLines[index], warnings);
+  }
+
+  const lastLeft = leftLines.at(-1) ?? '';
+  printStyledTextInline(printer, lastLeft, warnings);
+  printer.absolutePosition(rowRightStartDots(right, layoutState, printer.widthDots));
+  printStyledTextInline(printer, right, warnings);
+  printer.feed(1);
 }
 
 function applyPreviewReceiptCommand(lines, line, layoutState) {
@@ -502,7 +599,7 @@ function parseReceiptLayoutCommand(line) {
   if (!match) return null;
   return {
     name: normalizeCommandName(match[1]),
-    body: match[2] ?? ''
+    body: match[2] ?? '',
   };
 }
 
@@ -557,6 +654,14 @@ function formatReceiptRow(left, right, columns) {
 function currentLayoutColumns(layoutState) {
   const baseColumns = layoutState.small ? 42 : 32;
   return Math.max(1, Math.floor(baseColumns / Math.max(1, layoutState.sizeX)));
+}
+
+function rowRightStartDots(right, layoutState, widthDots) {
+  const columns = currentLayoutColumns(layoutState);
+  const columnWidthDots = widthDots / columns;
+  const printableRight = normalizePrinterTextDetailed(right).text;
+  const rightColumns = displayColumns(printableRight);
+  return Math.max(0, Math.round((columns - rightColumns) * columnWidthDots));
 }
 
 function applyPreviewControlCommand(line, layoutState) {
@@ -665,6 +770,11 @@ function printTextLine(printer, line, warnings) {
 }
 
 function printStyledTextLine(printer, line, warnings) {
+  printStyledTextInline(printer, line, warnings);
+  printer.feed(1);
+}
+
+function printStyledTextInline(printer, line, warnings) {
   const tokens = parseDiscordStyleTokens(line);
   for (const token of tokens) {
     if (token.bold) printer.bold(true);
@@ -673,7 +783,6 @@ function printStyledTextLine(printer, line, warnings) {
     if (token.underline) printer.underline(false);
     if (token.bold) printer.bold(false);
   }
-  printer.feed(1);
 }
 
 function printTextInline(printer, text, warnings) {
@@ -725,7 +834,7 @@ async function printImageItems(printer, imageItems, config, warnings) {
       const bytes = await fetchFirstImage(item.urls ?? [item.url], config);
       await printer.image(bytes, {
         maxWidth: config.printWidthDots,
-        dither: config.imageDitherMode
+        dither: config.imageDitherMode,
       });
     } catch (error) {
       printTextLine(printer, `[画像取得失敗: ${item.label || item.url}]`, warnings);
@@ -747,7 +856,7 @@ async function printStickers(printer, message, config, warnings) {
       const bytes = await fetchImage(url, config);
       await printer.image(bytes, {
         maxWidth: Math.min(config.printWidthDots, 256),
-        dither: config.imageDitherMode
+        dither: config.imageDitherMode,
       });
     } catch (error) {
       printTextLine(printer, `[スタンプ取得失敗: ${sticker.name}]`, warnings);
@@ -772,7 +881,7 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
         printTextLine(printer, '[URL QR]', warnings);
         printer.qrCode(url, {
           moduleSize: config.qrModuleSize,
-          errorCorrection: config.qrErrorCorrection
+          errorCorrection: config.qrErrorCorrection,
         });
       }
     }
@@ -811,7 +920,10 @@ function recordUnsupportedChars(text, warnings) {
 }
 
 function formatReplacementWarning(from, to) {
-  return `「${from}」(${formatCodePoint(from)})を「${to}」(${formatCodePoint(to)})に置換しました`;
+  if (to === '') {
+    return `「${from}」(${formatCodePointDetails(from)})を削除しました`;
+  }
+  return `「${from}」(${formatCodePointDetails(from)})を「${to}」(${formatCodePointDetailsList(to)})に置換しました`;
 }
 
 function formatCodePoint(char) {
@@ -819,15 +931,91 @@ function formatCodePoint(char) {
   return `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
+function formatCodePointDetails(char) {
+  const codePoint = formatCodePoint(char);
+  const name = UNICODE_NAME_LABELS.get(codePoint) ?? algorithmicUnicodeNameLabel(char);
+  if (!name) return `${codePoint} 名称未登録`;
+  return `${codePoint} ${name.en} / ${name.ja}`;
+}
+
+function algorithmicUnicodeNameLabel(char) {
+  const codePoint = char.codePointAt(0);
+  if (isCjkUnifiedIdeograph(codePoint)) {
+    return {
+      en: `CJK UNIFIED IDEOGRAPH-${codePoint.toString(16).toUpperCase()}`,
+      ja: `CJK統合漢字-${codePoint.toString(16).toUpperCase()}`
+    };
+  }
+  return null;
+}
+
+function isCjkUnifiedIdeograph(codePoint) {
+  return (
+    (codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
+    (codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x2a6df) ||
+    (codePoint >= 0x2a700 && codePoint <= 0x2b73f) ||
+    (codePoint >= 0x2b740 && codePoint <= 0x2b81f) ||
+    (codePoint >= 0x2b820 && codePoint <= 0x2ceaf) ||
+    (codePoint >= 0x2ceb0 && codePoint <= 0x2ebef) ||
+    (codePoint >= 0x30000 && codePoint <= 0x3134f) ||
+    (codePoint >= 0x31350 && codePoint <= 0x323af)
+  );
+}
+
+function formatCodePointDetailsList(text) {
+  return Array.from(text)
+    .map((char) => formatCodePointDetails(char))
+    .join(' ');
+}
+
+const UNICODE_NAME_LABELS = new Map([
+  ['U+0021', { en: 'EXCLAMATION MARK', ja: '感嘆符' }],
+  ['U+002B', { en: 'PLUS SIGN', ja: 'プラス記号' }],
+  ['U+002D', { en: 'HYPHEN-MINUS', ja: 'ハイフンマイナス' }],
+  ['U+003F', { en: 'QUESTION MARK', ja: '疑問符' }],
+  ['U+005C', { en: 'REVERSE SOLIDUS', ja: '逆斜線 日本ロケールでは円記号' }],
+  ['U+007C', { en: 'VERTICAL LINE', ja: '縦線' }],
+  ['U+007E', { en: 'TILDE', ja: 'チルダ' }],
+  ['U+00A5', { en: 'YEN SIGN', ja: '円記号' }],
+  ['U+2010', { en: 'HYPHEN', ja: 'ハイフン' }],
+  ['U+2011', { en: 'NON-BREAKING HYPHEN', ja: '改行禁止ハイフン' }],
+  ['U+2012', { en: 'FIGURE DASH', ja: '数字幅ダッシュ' }],
+  ['U+2013', { en: 'EN DASH', ja: 'エンダッシュ' }],
+  ['U+2014', { en: 'EM DASH', ja: 'エムダッシュ' }],
+  ['U+2015', { en: 'HORIZONTAL BAR', ja: 'ホリゾンタルバー' }],
+  ['U+203C', { en: 'DOUBLE EXCLAMATION MARK', ja: '二重感嘆符' }],
+  ['U+2049', { en: 'EXCLAMATION QUESTION MARK', ja: '感嘆疑問符' }],
+  ['U+2212', { en: 'MINUS SIGN', ja: 'マイナス記号' }],
+  ['U+2500', { en: 'BOX DRAWINGS LIGHT HORIZONTAL', ja: '罫線 細い横線' }],
+  ['U+2501', { en: 'BOX DRAWINGS HEAVY HORIZONTAL', ja: '罫線 太い横線' }],
+  ['U+2502', { en: 'BOX DRAWINGS LIGHT VERTICAL', ja: '罫線 細い縦線' }],
+  ['U+2503', { en: 'BOX DRAWINGS HEAVY VERTICAL', ja: '罫線 太い縦線' }],
+  ['U+2514', { en: 'BOX DRAWINGS LIGHT UP AND RIGHT', ja: '罫線 左下角' }],
+  ['U+2518', { en: 'BOX DRAWINGS LIGHT UP AND LEFT', ja: '罫線 右下角' }],
+  ['U+251C', { en: 'BOX DRAWINGS LIGHT VERTICAL AND RIGHT', ja: '罫線 縦線と右分岐' }],
+  ['U+2524', { en: 'BOX DRAWINGS LIGHT VERTICAL AND LEFT', ja: '罫線 縦線と左分岐' }],
+  ['U+252C', { en: 'BOX DRAWINGS LIGHT DOWN AND HORIZONTAL', ja: '罫線 上T字' }],
+  ['U+2534', { en: 'BOX DRAWINGS LIGHT UP AND HORIZONTAL', ja: '罫線 下T字' }],
+  ['U+253C', { en: 'BOX DRAWINGS LIGHT VERTICAL AND HORIZONTAL', ja: '罫線 交差' }],
+  ['U+301C', { en: 'WAVE DASH', ja: '波ダッシュ' }],
+  ['U+FE0E', { en: 'VARIATION SELECTOR-15', ja: '異体字セレクタ15 テキスト表示指定' }],
+  ['U+FE0F', { en: 'VARIATION SELECTOR-16', ja: '異体字セレクタ16 絵文字表示指定' }],
+  ['U+FE58', { en: 'SMALL EM DASH', ja: '小さいエムダッシュ' }],
+  ['U+FE63', { en: 'SMALL HYPHEN-MINUS', ja: '小さいハイフンマイナス' }],
+  ['U+FF0D', { en: 'FULLWIDTH HYPHEN-MINUS', ja: '全角ハイフンマイナス' }],
+  ['U+FF5E', { en: 'FULLWIDTH TILDE', ja: '全角チルダ' }]
+]);
+
 async function printAuthorAvatar(printer, message, config) {
   const avatarUrl = message.author.displayAvatarURL({
     extension: 'png',
-    size: 128
+    size: 128,
   });
   const avatarBytes = await fetchImage(avatarUrl, config);
   await printer.image(avatarBytes, {
     maxWidth: Math.min(config.authorAvatarWidthDots, config.printWidthDots),
-    dither: config.imageDitherMode
+    dither: config.imageDitherMode,
   });
 }
 
@@ -844,7 +1032,7 @@ function printTextHeader(printer, message, warnings, printNumber) {
 }
 
 async function buildAuthorHeaderImage(message, config, printNumber) {
-  const avatarSize = Math.min(config.authorAvatarWidthDots, 128);
+  const avatarSize = Math.min(config.authorAvatarWidthDots ?? 96, 128);
   const padding = 8;
   const gap = 10;
   const width = config.printWidthDots;
@@ -862,14 +1050,10 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
   if (config.printAuthorAvatar) {
     const avatarUrl = message.author.displayAvatarURL({
       extension: 'png',
-      size: 128
+      size: 128,
     });
     const avatarBytes = await fetchImage(avatarUrl, config);
-    avatar = await sharp(avatarBytes)
-      .rotate()
-      .resize(avatarSize, avatarSize, { fit: 'cover' })
-      .png()
-      .toBuffer();
+    avatar = await sharp(avatarBytes).rotate().resize(avatarSize, avatarSize, { fit: 'cover' }).png().toBuffer();
   }
 
   const svg = Buffer.from(`
@@ -878,13 +1062,13 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
     ${fontFace}
     .name { font-family: HeaderFont, Arial, sans-serif; font-size: 32px; font-weight: 700; fill: #000; }
     .meta { font-family: HeaderFont, Arial, sans-serif; font-size: 24px; fill: #000; }
-    .number { font-family: HeaderFont, Arial, sans-serif; font-size: 24px; font-weight: 700; fill: #000; }
+    .number { font-family: HeaderFont, Arial, sans-serif; font-size: 36px; font-weight: 700; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
   <text class="name" x="${textX}" y="${padding + 30}">${name}</text>
   <text class="meta" x="${textX}" y="${padding + 56}">${dateText}</text>
   <text class="meta" x="${textX}" y="${padding + 80}">${timeText}</text>
-  <text class="number" x="${textX}" y="${padding + 104}">${numberText}</text>
+  <text class="number" x="${textX}" y="${padding + 110}">${numberText}</text>
   <line x1="${textX}" y1="${height - 8}" x2="${textX + textWidth}" y2="${height - 8}" stroke="black" stroke-width="2"/>
 </svg>`);
 
@@ -898,8 +1082,8 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
       width,
       height,
       channels: 4,
-      background: '#ffffff'
-    }
+      background: '#ffffff',
+    },
   })
     .composite(composites)
     .png()
@@ -935,12 +1119,12 @@ function formatMessageTimeParts(date) {
     minute: '2-digit',
     second: '2-digit',
     hourCycle: 'h23',
-    timeZone: 'Asia/Tokyo'
+    timeZone: 'Asia/Tokyo',
   }).formatToParts(date);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return {
     date: `${value.year}年${value.month}月${value.day}日（${value.weekday}）`,
-    time: `${value.hour}:${value.minute}:${value.second}`
+    time: `${value.hour}:${value.minute}:${value.second}`,
   };
 }
 
@@ -950,12 +1134,7 @@ function truncateText(value, maxLength) {
 }
 
 function escapeXml(value) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 function extractMessageContent(message) {
@@ -968,18 +1147,22 @@ function extractMessageContent(message) {
     pushUniqueEmojiImage(imageItems, seenEmojiImages, {
       key: `custom:${id}`,
       label: `[絵文字: :${name}:]`,
-      url: `https://cdn.discordapp.com/emojis/${id}.png?size=128&quality=lossless`
+      url: `https://cdn.discordapp.com/emojis/${id}.png?size=128&quality=lossless`,
     });
     return `:${name}:`;
   });
 
   const unicodeEmoji = emojiRegex();
   text = text.replace(unicodeEmoji, (emoji) => {
+    if (shouldKeepEmojiAsText(emoji)) {
+      return emoji;
+    }
+
     const codepointName = emojiCodepointName(emoji);
     pushUniqueEmojiImage(imageItems, seenEmojiImages, {
       key: `unicode:${codepointName}`,
       label: `[絵文字: :emoji_${codepointName}:]`,
-      urls: twemojiUrls(emoji)
+      urls: twemojiUrls(emoji),
     });
     return `:emoji_${codepointName}:`;
   });
@@ -988,7 +1171,7 @@ function extractMessageContent(message) {
     if (isImageAttachment(attachment)) {
       imageItems.push({
         label: `[画像: ${attachment.name || attachment.id}]`,
-        url: attachment.url
+        url: attachment.url,
       });
     }
   }
@@ -998,12 +1181,16 @@ function extractMessageContent(message) {
     if (imageUrl) {
       imageItems.push({
         label: '[埋め込み画像]',
-        url: imageUrl
+        url: imageUrl,
       });
     }
   }
 
   return { text: text.replace(/[ \t]+\n/g, '\n'), imageItems, urls };
+}
+
+function shouldKeepEmojiAsText(emoji) {
+  return Array.from(emoji).some((char) => TEXT_FALLBACK_EMOJI.has(char.codePointAt(0)));
 }
 
 function pushUniqueEmojiImage(imageItems, seenEmojiImages, item) {
@@ -1137,8 +1324,8 @@ function isImageAttachment(attachment) {
 async function fetchImage(url, config) {
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'discord-printer-bot/0.1'
-    }
+      'User-Agent': 'discord-printer-bot/0.1',
+    },
   });
 
   if (!response.ok) {
@@ -1176,10 +1363,7 @@ async function fetchFirstImage(urls, config) {
 }
 
 function twemojiUrls(emoji) {
-  const candidates = [
-    emojiCodepoints(emoji, { keepVariationSelector: true }),
-    emojiCodepoints(emoji, { keepVariationSelector: false })
-  ]
+  const candidates = [emojiCodepoints(emoji, { keepVariationSelector: true }), emojiCodepoints(emoji, { keepVariationSelector: false })]
     .filter((codepoints) => codepoints.length > 0)
     .map((codepoints) => twemojiAssetUrl(codepoints));
 

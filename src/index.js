@@ -3,9 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
-import { buildPreviewText, buildPrintJob } from './discordContent.js';
+import { buildMemberJoinPrintJob, buildPreviewText, buildPrintJob } from './discordContent.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
-import { buildSymbolPrintJob, parseSymbolMessageCommand } from './symbolContent.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
@@ -14,6 +13,7 @@ const NEAR_END_PROBLEM = 'レシート用紙残量少';
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent
   ],
@@ -59,6 +59,43 @@ function enqueuePrint(message) {
     } else {
       await markPrintSuccess(message, hasNearEndWarning());
       console.log(`Printed message ${message.id} from ${message.author.tag}`);
+    }
+  });
+}
+
+function enqueueMemberJoinPrint(member) {
+  const eventInfo = {
+    id: `member-join-${member.id}-${Date.now()}`,
+    authorTag: member.user.tag ?? member.user.username
+  };
+
+  enqueuePrintJob(eventInfo, 'member-join', async () => {
+    const printNumber = await peekNextPrintNumber();
+    let retryNotified = false;
+    const { bytes, warnings } = await buildMemberJoinPrintJob(member, config, {
+      printNumber
+    });
+    await sendRawToPrinter(bytes, config.printerName, {
+      ...config,
+      onRetry: async (retry) => {
+        if (retryNotified) return;
+        retryNotified = true;
+        console.warn(`Member join print retry for ${member.user.id}: ${retry.reason}`);
+      }
+    });
+    await commitPrintNumber(printNumber);
+    if (warnings.length > 0) {
+      console.warn(`Printed member join ${member.user.id} with ${warnings.length} warning(s): ${warnings.join(' / ')}`);
+    } else {
+      console.log(`Printed member join ${member.user.id}`);
+    }
+  }, {
+    onFailure: async (error) => {
+      console.error(`member-join print failed for ${member.user.id}:`, error);
+      await sendPrinterMonitorMessage(
+        client,
+        `新規参加メンバーの印刷に失敗しました: ${member.displayName ?? member.user.username} / ${error.message}`
+      );
     }
   });
 }
@@ -126,30 +163,10 @@ function shouldOmitHeader(message) {
   return delta >= 0 && delta <= config.mergeSameUserWindowMs;
 }
 
-function enqueueSymbolMessagePrint(message, command) {
-  return enqueuePrintJob(message, 'code', async () => {
-    let retryNotified = false;
-    const bytes = buildSymbolPrintJob({
-      ...command,
-      requestedBy: message.author.tag
-    }, config);
-
-    await sendRawToPrinter(bytes, config.printerName, {
-      ...config,
-      onRetry: async (retry) => {
-        if (retryNotified) return;
-        retryNotified = true;
-        await markPrintRetry(message, retry);
-      }
-    });
-    console.log(`Printed code requested by message ${message.id} from ${message.author.tag}`);
-    await markPrintSuccess(message, hasNearEndWarning());
-  });
-}
-
-function enqueuePrintJob(message, label, job) {
+function enqueuePrintJob(message, label, job, options = {}) {
   queuedPrintCount += 1;
-  console.log(`Queued ${label} print ${message.id} from ${message.author.tag}; pending=${queuedPrintCount}`);
+  const authorTag = message.author?.tag ?? message.authorTag ?? 'system';
+  console.log(`Queued ${label} print ${message.id} from ${authorTag}; pending=${queuedPrintCount}`);
 
   const previous = queue;
   const run = previous
@@ -162,9 +179,13 @@ function enqueuePrintJob(message, label, job) {
   queue = run
     .catch(async (error) => {
       console.error(`${label} print failed:`, error);
-      await markPrintFailure(message, error.message).catch((reactionError) => {
-        console.error('Failed to report print failure:', reactionError);
-      });
+      if (options.onFailure) {
+        await options.onFailure(error);
+      } else {
+        await markPrintFailure(message, error.message).catch((reactionError) => {
+          console.error('Failed to report print failure:', reactionError);
+        });
+      }
     })
     .finally(() => {
       queuedPrintCount = Math.max(0, queuedPrintCount - 1);
@@ -263,20 +284,35 @@ async function removeBotReaction(message, emoji) {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   console.log(`Watching channel ${config.channelId}`);
+  const watchedChannel = await readyClient.channels.fetch(config.channelId).catch((error) => {
+    console.error(`Failed to fetch watched channel ${config.channelId}: ${error.message}`);
+    return null;
+  });
+  if (watchedChannel) {
+    console.log(`Watched channel resolved: ${watchedChannel.name ?? '(no name)'} (${watchedChannel.type})`);
+  }
   console.log(`Printer: ${config.printerName}`);
   console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
   startPrinterMonitor(readyClient);
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
-  if (message.channelId !== config.channelId) return;
+  if (message.author.bot) {
+    console.log(`Ignored bot message ${message.id} from ${message.author.tag}`);
+    return;
+  }
+  if (!isWatchedChannelMessage(message)) {
+    console.log(`Ignored message ${message.id} from channel ${message.channelId}; watching ${config.channelId}`);
+    return;
+  }
   if (!isPrintableUserMessage(message)) {
     console.log(`Skipped non-printable message ${message.id} type=${message.type}`);
     return;
   }
 
   try {
+    // Message commands are checked before normal printing so command messages
+    // do not consume print numbers or enter the printer queue.
     if (isPreviewMessageCommand(message)) {
       await replyWithPreview(message);
       await addReaction(message, '👀');
@@ -290,12 +326,6 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    const command = parseSymbolMessageCommand(message.content ?? '', config.messageCommandPrefix);
-    if (command) {
-      enqueueSymbolMessagePrint(message, command);
-      await addReaction(message, '🧾');
-      return;
-    }
   } catch (error) {
     await markPrintFailure(message, error.message);
     return;
@@ -303,6 +333,19 @@ client.on(Events.MessageCreate, async (message) => {
 
   enqueuePrint(message);
 });
+
+client.on(Events.GuildMemberAdd, (member) => {
+  if (!config.memberJoinPrintEnabled) return;
+  if (config.guildId && member.guild.id !== config.guildId) return;
+
+  console.log(`Guild member joined: ${member.user.tag ?? member.user.username} (${member.user.id})`);
+  enqueueMemberJoinPrint(member);
+});
+
+function isWatchedChannelMessage(message) {
+  if (message.channelId === config.channelId) return true;
+  return message.channel?.isThread?.() && message.channel.parentId === config.channelId;
+}
 
 function isPreviewMessageCommand(message) {
   const content = (message.content ?? '').trimStart();

@@ -38,6 +38,7 @@ export const config = {
   printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
   printerMonitorEnabled: boolEnv('PRINTER_MONITOR_ENABLED', true),
   printerMonitorIntervalMs: intEnv('PRINTER_MONITOR_INTERVAL_MS', 10000),
+  memberJoinPrintEnabled: boolEnv('MEMBER_JOIN_PRINT_ENABLED', true),
   oposStatusEnabled: boolEnv('OPOS_STATUS_ENABLED', false),
   oposLogicalName: optionalEnv('OPOS_LOGICAL_NAME', ''),
   oposClaimTimeoutMs: intEnv('OPOS_CLAIM_TIMEOUT_MS', 1000),

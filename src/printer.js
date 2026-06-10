@@ -10,6 +10,7 @@ const RAW_PRINT_SCRIPT = join(__dirname, '..', 'tools', 'rawprint.ps1');
 const PRINTER_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'printer-status.ps1');
 const OPOS_STATUS_SCRIPT = join(__dirname, '..', 'tools', 'opos-status.ps1');
 const RETRYABLE_PRINTER_PROBLEMS = new Set([
+  'エラー',
   '印刷中止中',
   '印刷ジョブ処理中',
   'I/O待ち',
@@ -54,6 +55,7 @@ export async function sendRawToPrinter(bytes, printerName, options = {}) {
         'Discord message'
       ]);
     }, options);
+    await waitForPrinterSettled(printerName, options);
   } finally {
     await rm(filePath, { force: true });
   }
@@ -141,6 +143,7 @@ function isRetryablePrintError(error) {
     '印刷ジョブ処理中',
     'I/O待ち',
     '使用不可',
+    'エラー',
     'The printer is busy',
     'プリンターはビジー',
     '別のプロセス'
@@ -157,6 +160,29 @@ function isOposExclusiveAccessError(error) {
     'did not relinquish control before timeout',
     'Claim'
   ].every((pattern) => message.includes(pattern));
+}
+
+async function waitForPrinterSettled(printerName, options = {}) {
+  const attempts = Math.max(1, Number.parseInt(options.printRetryAttempts ?? 8, 10) || 8);
+  const delayMs = Math.max(100, Number.parseInt(options.printRetryDelayMs ?? 1500, 10) || 1500);
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const problems = (await checkPrinterProblems(printerName, options))
+      .filter((problem) => !WARNING_ONLY_PRINTER_PROBLEMS.has(problem));
+    const transientProblems = problems.filter((problem) => RETRYABLE_PRINTER_PROBLEMS.has(problem));
+    const hardProblems = problems.filter((problem) => HARD_PRINTER_PROBLEMS.has(problem));
+
+    if (hardProblems.length > 0) {
+      throw printerStatusError('プリンタエラー', hardProblems);
+    }
+    if (transientProblems.length === 0) {
+      return;
+    }
+
+    if (attempt < attempts) {
+      await sleep(delayMs);
+    }
+  }
 }
 
 function sleep(ms) {
@@ -216,16 +242,18 @@ async function getPrinterStatus(printerName) {
 function describePrinterProblems(status) {
   const problems = [];
   const printerStatus = String(status.PrinterStatus ?? '');
+  const jobCount = Number(status.JobCount ?? 0);
   const detectedErrorState = Number(status.DetectedErrorState ?? 0);
   const extendedPrinterStatus = Number(status.ExtendedPrinterStatus ?? 0);
   const printerState = Number(status.PrinterState ?? 0);
 
   if (status.WorkOffline) problems.push('オフライン');
   if (status.Paused) problems.push('一時停止中');
+  if (jobCount > 0) problems.push('印刷ジョブ処理中');
 
   const okPrinterStatuses = new Set(['Normal', 'Idle', 'Printing', 'Processing', 'WarmingUp', '3', '4', '5']);
   if (printerStatus && !okPrinterStatuses.has(printerStatus)) {
-    problems.push(`状態=${printerStatus}`);
+    problems.push(printerStatus === 'Error' ? 'エラー' : `状態=${printerStatus}`);
   }
 
   const detectedErrorMap = {

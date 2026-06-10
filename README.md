@@ -39,6 +39,7 @@ Copy-Item .env.example .env
 - `PRINT_RETRY_DELAY_MS`: リトライ待機時間。試行ごとに少しずつ伸びます
 - `PRINTER_MONITOR_ENABLED`: 起動中にプリンタ状態を定期監視し、問題を Discord に通知するか
 - `PRINTER_MONITOR_INTERVAL_MS`: プリンタ状態の監視間隔
+- `MEMBER_JOIN_PRINT_ENABLED`: 新しいメンバーがサーバーへ参加した時にレシートを印刷するか
 - `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
 - `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
 - `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
@@ -64,12 +65,12 @@ Get-Printer | Select-Object Name
 ## Discord 側の設定
 
 1. Discord Developer Portal で bot を作成します。
-2. Bot 設定で `MESSAGE CONTENT INTENT` を有効にします。
+2. Bot 設定で `MESSAGE CONTENT INTENT` と `SERVER MEMBERS INTENT` を有効にします。
 3. OAuth2 URL Generator で `bot` を選び、権限は最低限 `View Channels`、`Read Message History`、`Send Messages`、`Add Reactions` を付けます。
 4. bot をサーバーに招待します。
 5. Discord の開発者モードを有効にして、印刷対象チャンネルを右クリックし「IDをコピー」します。
 
-`Error: Used disallowed intents` が出る場合は、ほぼ `MESSAGE CONTENT INTENT` が無効です。Discord Developer Portal の `Bot` ページで `Privileged Gateway Intents` の `MESSAGE CONTENT INTENT` をオンにして保存し、`.env` の `DISCORD_TOKEN` が同じアプリの bot token か確認してください。
+`Error: Used disallowed intents` が出る場合は、ほぼ `MESSAGE CONTENT INTENT` または `SERVER MEMBERS INTENT` が無効です。Discord Developer Portal の `Bot` ページで `Privileged Gateway Intents` の両方をオンにして保存し、`.env` の `DISCORD_TOKEN` が同じアプリの bot token か確認してください。
 
 ## 実行
 
@@ -102,6 +103,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 !print-code code128 ABC123
 !print-code jan13 490123456789
 ```
+
+1つのDiscord投稿に複数行書くと、Discordヘッダー付きの1ジョブとして順番に印刷します。通常本文も同じ投稿内に混ぜられます。カットは最後に1回だけです。
+
+```text
+通常文の上
+!print-code qr https://example.com
+!print-code code128 ABC123
+通常文の下
+!qr https://openai.com
+```
+
+短縮名として `gs1128` は `GS1-128`、`databar` は `GS1 DataBar Omnidirectional` として扱います。
+`code128` は数字のみ偶数桁のデータなら自動で Code Set C を使います。明示したい場合は `code128c` を使えます。
 
 対応種別: UPC-A、UPC-E、JAN/EAN 8、JAN/EAN 13、CODE 39、ITF、CODABAR/NW-7、CODE 93、CODE 128、GS1-128、GS1 DataBar 系、PDF417、QR Code、MaxiCode、Composite Symbology。
 
