@@ -7,7 +7,6 @@ const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
-const LITERAL_TEXT_PREFIX = '\u0000LITERAL\u0000';
 
 export async function buildPrintJob(message, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
@@ -35,7 +34,6 @@ export async function buildPrintJob(message, config, options = {}) {
 
   if (config.printUrlQr && urls.length > 0) {
     for (const url of urls) {
-      printTextLine(printer, '[URL QR]', warnings);
       printer.qrCode(url, {
         moduleSize: config.qrModuleSize,
         errorCorrection: config.qrErrorCorrection,
@@ -200,11 +198,6 @@ async function printTextBlock(printer, text, warnings, options = {}) {
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
-    if (rawLine.startsWith(LITERAL_TEXT_PREFIX)) {
-      printTextLine(printer, rawLine.slice(LITERAL_TEXT_PREFIX.length), warnings);
-      continue;
-    }
-
     const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -274,11 +267,6 @@ function renderTextPreview(text, options = {}) {
   const lines = [];
 
   for (const rawLine of printableText.trim().split(/\r?\n/)) {
-    if (rawLine.startsWith(LITERAL_TEXT_PREFIX)) {
-      lines.push(previewLiteralText(rawLine.slice(LITERAL_TEXT_PREFIX.length)));
-      continue;
-    }
-
     const imageResult = applyPreviewInlineImageCommand(lines, rawLine, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -629,7 +617,7 @@ function printReceiptRowCommand(printer, body, warnings, layoutState) {
 
   const left = body.slice(0, separator).trim();
   const right = body.slice(separator + 1).trim();
-  const rightColumns = displayColumns(right);
+  const rightColumns = displayColumns(stripDiscordStyleMarkers(right));
   const columns = currentLayoutColumns(layoutState);
 
   if (!right || rightColumns >= columns - 1) {
@@ -710,7 +698,7 @@ function renderReceiptLayoutCommand(command, layoutState) {
 }
 
 function formatReceiptRow(left, right, columns) {
-  const rightWidth = displayColumns(right);
+  const rightWidth = displayColumns(stripDiscordStyleMarkers(right));
   if (!right) return wrapText(left, columns);
   if (rightWidth >= columns - 1) {
     return [...wrapText(left, columns), right];
@@ -731,7 +719,7 @@ function currentLayoutColumns(layoutState) {
 function rowRightStartDots(right, layoutState, widthDots) {
   const columns = currentLayoutColumns(layoutState);
   const columnWidthDots = widthDots / columns;
-  const printableRight = normalizePrinterTextDetailed(right).text;
+  const printableRight = normalizePrinterTextDetailed(stripDiscordStyleMarkers(right)).text;
   const rightColumns = displayColumns(printableRight);
   return Math.max(0, Math.round((columns - rightColumns) * columnWidthDots));
 }
@@ -827,10 +815,6 @@ function stripDiscordStyleMarkers(text) {
 
 function previewPrintableText(text) {
   return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).text;
-}
-
-function previewLiteralText(text) {
-  return normalizePrinterTextDetailed(text).text;
 }
 
 function stripPreviewCommand(content, prefix) {
@@ -1031,13 +1015,18 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
 
   for (const snapshot of snapshots) {
     const { text, imageItems, urls } = extractMessageContent(snapshot);
+    const imageState = createInlineImageState();
 
     printTextLine(printer, '[転送メッセージ]', warnings);
-    await printTextBlock(printer, text, warnings);
+    await printTextBlock(printer, text, warnings, {
+      config,
+      prefix: config.messageCommandPrefix,
+      imageItems,
+      imageState
+    });
 
     if (config.printUrlQr && urls.length > 0) {
       for (const url of urls) {
-        printTextLine(printer, '[URL QR]', warnings);
         printer.qrCode(url, {
           moduleSize: config.qrModuleSize,
           errorCorrection: config.qrErrorCorrection,
@@ -1045,7 +1034,7 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
       }
     }
 
-    await printImageItems(printer, imageItems, config, warnings);
+    await printImageItems(printer, remainingImageItems(imageItems, imageState), config, warnings);
     await printStickers(printer, snapshot, config, warnings);
     printer.feed(1);
   }
@@ -1299,10 +1288,8 @@ function escapeXml(value) {
 function extractMessageContent(message) {
   const imageItems = [];
   const seenEmojiImages = new Set();
-  let text = message.content ?? '';
-  const urls = extractUrls(stripCodeBlocksForUrlExtraction(text));
-  const protectedCodeBlocks = protectCodeBlocks(text);
-  text = protectedCodeBlocks.text;
+  let text = stripCodeMarkers(message.content ?? '');
+  const urls = extractUrls(text);
 
   text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
     pushUniqueEmojiImage(imageItems, seenEmojiImages, {
@@ -1327,8 +1314,6 @@ function extractMessageContent(message) {
     });
     return `:emoji_${codepointName}:`;
   });
-
-  text = restoreProtectedCodeBlocks(text, protectedCodeBlocks.blocks);
 
   let attachmentImageIndex = 0;
   for (const attachment of valuesOf(message.attachments)) {
@@ -1370,14 +1355,14 @@ function formatDiscordMarkdownForPrint(text) {
   const codeBlocks = [];
   let formatted = text.replace(/```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_match, language, code) => {
     const index = codeBlocks.length;
-    codeBlocks.push(formatCodeBlockLiteral(code, language));
+    codeBlocks.push(formatCodeBlockLiteral(code));
     return `\u0000CODEBLOCK${index}\u0000`;
   });
 
   const inlineCodes = [];
   formatted = formatted.replace(/`([^`\n]+)`/g, (_match, code) => {
     const index = inlineCodes.length;
-    inlineCodes.push(`\`${code}\``);
+    inlineCodes.push(code);
     return `\u0000INLINECODE${index}\u0000`;
   });
 
@@ -1391,6 +1376,10 @@ function formatDiscordMarkdownForPrint(text) {
 
   for (const rawLine of lines) {
     let line = rawLine;
+
+    if (line.trim().startsWith('```')) {
+      continue;
+    }
 
     if (line.startsWith('>>> ')) {
       multiQuote = true;
@@ -1452,12 +1441,8 @@ function formatDiscordMarkdownForPrint(text) {
   return formatted;
 }
 
-function formatCodeBlockLiteral(code, language) {
-  return code
-    .replace(/\s+$/g, '')
-    .split(/\r?\n/)
-    .map((line) => `${LITERAL_TEXT_PREFIX}${line}`)
-    .join('\n');
+function formatCodeBlockLiteral(code) {
+  return code.replace(/\s+$/g, '');
 }
 
 function valuesOf(collection) {
@@ -1482,22 +1467,10 @@ function extractUrls(text) {
   return urls;
 }
 
-function stripCodeBlocksForUrlExtraction(text) {
-  return String(text ?? '').replace(/```[a-zA-Z0-9_-]*\n?[\s\S]*?```/g, '');
-}
-
-function protectCodeBlocks(text) {
-  const blocks = [];
-  const protectedText = String(text ?? '').replace(/```[a-zA-Z0-9_-]*\n?[\s\S]*?```/g, (match) => {
-    const index = blocks.length;
-    blocks.push(match);
-    return `\u0000PROTECTEDCODE${index}\u0000`;
-  });
-  return { text: protectedText, blocks };
-}
-
-function restoreProtectedCodeBlocks(text, blocks) {
-  return text.replace(/\u0000PROTECTEDCODE(\d+)\u0000/g, (_match, index) => blocks[Number(index)] ?? '');
+function stripCodeMarkers(text) {
+  return String(text ?? '')
+    .replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, (_match, code) => code.replace(/\s+$/g, ''))
+    .replace(/`([^`\n]+)`/g, '$1');
 }
 
 function trimUrl(url) {

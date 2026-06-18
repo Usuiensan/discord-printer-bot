@@ -159,7 +159,7 @@ function isOposExclusiveAccessError(error) {
     'exclusive access',
     'did not relinquish control before timeout',
     'Claim'
-  ].every((pattern) => message.includes(pattern));
+  ].some((pattern) => message.includes(pattern));
 }
 
 async function waitForPrinterSettled(printerName, options = {}) {

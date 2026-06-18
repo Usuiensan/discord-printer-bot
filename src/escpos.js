@@ -516,7 +516,7 @@ function clampWord(value) {
 function clampRelativeWord(value) {
   const number = Number.parseInt(value, 10);
   if (!Number.isFinite(number)) return 0;
-  return Math.min(Math.max(number, 0), 0x7fff);
+  return Math.min(Math.max(number, -32768), 32767);
 }
 
 function normalizeCommandName(value) {

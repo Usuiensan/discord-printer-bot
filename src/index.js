@@ -496,12 +496,11 @@ async function resolveReprintTarget(message, targetRef) {
 }
 
 function parseDiscordMessageReference(value) {
-  const match = String(value).match(/^https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/\d+\/(\d+)\/(\d+)$/i)
-    ?? String(value).match(/^https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(@me|\d+)\/(\d+)\/(\d+)$/i);
+  const match = String(value).match(/^https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(@me|\d+)\/(\d+)\/(\d+)$/i);
   if (!match) return null;
   return {
-    channelId: match[1] === '@me' ? null : match[1],
-    messageId: match[2] ?? match[3]
+    channelId: match[1] === '@me' ? null : match[2],
+    messageId: match[3]
   };
 }
 

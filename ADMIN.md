@@ -54,6 +54,7 @@ Get-Printer | Select-Object Name
 - `PRINT_URL_QR`: URL を QR コードとして印刷するか
 - `QR_MODULE_SIZE`: QR コードのドットサイズ
 - `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
+- `BARCODE_HRI`: 1次元バーコードの人間可読テキスト位置。`none`、`above`、`below`、`both`
 - `MESSAGE_COMMAND_PREFIX`: Discord本文コマンドの接頭辞
 - `RAW_ESCPOS_USER_IDS`: raw ESC/POS を許可するDiscordユーザーID。カンマ区切り
 - `RAW_ESCPOS_ADMIN_USER_IDS`: 設定変更系を含むraw ESC/POSも許可するDiscordユーザーID。カンマ区切り

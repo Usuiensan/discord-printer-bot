@@ -69,10 +69,6 @@ export function appendSymbolItems(printer, commands, config) {
   const items = Array.isArray(commands) ? commands : [commands];
   if (items.length === 0) return;
 
-  if (items.some((item) => item.printText !== false)) {
-    printer.bold(true).line(items.length > 1 ? '[CODE PRINT x' + items.length + ']' : '[CODE PRINT]').bold(false);
-  }
-
   for (const [index, item] of items.entries()) {
     try {
       printSymbolItem(printer, item, config, index, items.length);
@@ -82,18 +78,10 @@ export function appendSymbolItems(printer, commands, config) {
   }
 }
 
-function printSymbolItem(printer, { type, data, compositeData, lineType, printText = true }, config, index, total) {
+function printSymbolItem(printer, { type, data, compositeData, lineType }, config, index, total) {
   validateSymbolInput(type, data, compositeData, config);
 
-  if (printText && total > 1) {
-    printer.feed(index === 0 ? 0 : 1);
-    printer.line(`#${index + 1}/${total}`);
-  }
-  if (printText) {
-    printer.line(typeLabel(type));
-    printer.line(data);
-    printer.feed(1);
-  }
+  if (index > 0) printer.feed(1);
 
   if (ONE_D_TYPES.has(type)) {
     printer.barcode(type, prepareOneDimensionalData(type, data), barcodeOptionsFor(type, data, config));
@@ -120,40 +108,29 @@ export function formatSymbolPreviewLines(commands) {
   if (items.length === 0) return [];
 
   const lines = [];
-  if (items.some((item) => item.printText !== false)) {
-    lines.push(items.length > 1 ? `[CODE PRINT x${items.length}]` : '[CODE PRINT]');
-  }
   for (const [index, item] of items.entries()) {
-    if (item.printText !== false) {
-      if (items.length > 1) lines.push(`#${index + 1}/${items.length}`);
-      lines.push(typeLabel(item.type));
-      lines.push(item.data);
-    }
     lines.push(symbolPlaceholder(item));
   }
   return lines;
 }
 
-function symbolPlaceholder({ type, data, compositeData, lineType }) {
-  if (type === 'qr') return `[QR: ${data}]`;
-  if (type === 'pdf417') return `[PDF417: ${data}]`;
-  if (type === 'maxicode') return `[MaxiCode: ${data}]`;
-  if (type === 'composite') return `[Composite: ${lineType || 'gs1_databar_omni'} ${data} + ${compositeData}]`;
-  return `[Barcode: ${type} ${data}]`;
+function symbolPlaceholder({ type }) {
+  if (type === 'qr') return '[QRコード]';
+  if (type === 'pdf417') return '[PDF417]';
+  if (type === 'maxicode') return '[MaxiCode]';
+  if (type === 'composite') return '[Composite Symbology]';
+  return '[バーコード]';
 }
 
 export function parseSymbolMessageCommands(content, prefix = '!') {
-  const trimmed = content.trim();
+  const trimmed = stripInlineCodeMarkers(content).trim();
   if (!trimmed.startsWith(prefix)) return null;
 
   const commands = [];
-  let inCodeBlock = false;
   for (const line of trimmed.split(/\r?\n/)) {
     if (isCodeBlockFence(line)) {
-      inCodeBlock = !inCodeBlock;
       continue;
     }
-    if (inCodeBlock) continue;
 
     const command = parseSymbolCommandLine(line, prefix);
     if (command) commands.push(command);
@@ -165,21 +142,14 @@ export function parseSymbolMessageCommands(content, prefix = '!') {
 export function extractSymbolMessageCommands(content, prefix = '!') {
   const commands = [];
   const textLines = [];
-  let inCodeBlock = false;
 
   for (const line of String(content ?? '').split(/\r?\n/)) {
     if (isCodeBlockFence(line)) {
-      inCodeBlock = !inCodeBlock;
-      textLines.push(line);
       continue;
     }
 
-    if (inCodeBlock) {
-      textLines.push(line);
-      continue;
-    }
-
-    const command = parseSymbolCommandLine(line, prefix);
+    const commandLine = stripInlineCodeMarkers(line);
+    const command = parseSymbolCommandLine(commandLine, prefix);
     if (command) {
       commands.push(command);
     } else {
@@ -195,6 +165,10 @@ export function extractSymbolMessageCommands(content, prefix = '!') {
 
 function isCodeBlockFence(line) {
   return /^```/.test(String(line).trim());
+}
+
+function stripInlineCodeMarkers(value) {
+  return String(value ?? '').replace(/`([^`\n]+)`/g, '$1');
 }
 
 export function parseSymbolMessageCommand(content, prefix = '!') {
@@ -350,10 +324,18 @@ function validateOneDimensionalWidth(type, data, printWidthDots) {
 }
 
 function barcodeOptionsFor(type, data, config) {
+  const options = {
+    hri: normalizeBarcodeHri(config.barcodeHri)
+  };
   if (type === 'code39' || shouldUseNarrowBarcode(type, data, config.printWidthDots ?? 384)) {
-    return { width: 2 };
+    options.width = 2;
   }
-  return {};
+  return options;
+}
+
+function normalizeBarcodeHri(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return ['none', 'above', 'below', 'both'].includes(normalized) ? normalized : 'below';
 }
 
 function shouldUseNarrowBarcode(type, data, printWidthDots) {

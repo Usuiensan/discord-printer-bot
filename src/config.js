@@ -63,6 +63,7 @@ export const config = {
   printUrlQr: boolEnv('PRINT_URL_QR', true),
   qrModuleSize: intEnv('QR_MODULE_SIZE', 6),
   qrErrorCorrection: optionalEnv('QR_ERROR_CORRECTION', 'M'),
+  barcodeHri: optionalEnv('BARCODE_HRI', 'below'),
   messageCommandPrefix: optionalEnv('MESSAGE_COMMAND_PREFIX', '!'),
   rawEscposUserIds: listEnv('RAW_ESCPOS_USER_IDS'),
   rawEscposAdminUserIds: listEnv('RAW_ESCPOS_ADMIN_USER_IDS'),
