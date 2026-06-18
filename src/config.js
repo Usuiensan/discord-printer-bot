@@ -29,6 +29,14 @@ function optionalEnv(name, fallback) {
   return value || fallback;
 }
 
+function enumEnv(name, fallback, allowed) {
+  const value = optionalEnv(name, fallback).toLowerCase();
+  if (!allowed.includes(value)) {
+    throw new Error(`${name} must be one of: ${allowed.join(', ')}`);
+  }
+  return value;
+}
+
 function listEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) return [];
@@ -37,6 +45,10 @@ function listEnv(name) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
+
+const urlQrMode = process.env.URL_QR_MODE?.trim()
+  ? enumEnv('URL_QR_MODE', 'manual', ['manual', 'auto'])
+  : (boolEnv('PRINT_URL_QR', false) ? 'auto' : 'manual');
 
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
@@ -60,7 +72,10 @@ export const config = {
   authorAvatarWidthDots: intEnv('AUTHOR_AVATAR_WIDTH_DOTS', 96),
   imageDitherMode: optionalEnv('IMAGE_DITHER_MODE', 'ordered'),
   imageMaxBytes: intEnv('IMAGE_MAX_BYTES', 32 * 1024 * 1024),
-  printUrlQr: boolEnv('PRINT_URL_QR', true),
+  urlQrMode,
+  printUrlQr: urlQrMode === 'auto',
+  emojiRenderMode: enumEnv('EMOJI_RENDER_MODE', 'inline_image', ['inline_image', 'alias_append', 'text']),
+  emojiImageWidthDots: intEnv('EMOJI_IMAGE_WIDTH_DOTS', 96),
   qrModuleSize: intEnv('QR_MODULE_SIZE', 6),
   qrErrorCorrection: optionalEnv('QR_ERROR_CORRECTION', 'M'),
   barcodeHri: optionalEnv('BARCODE_HRI', 'below'),

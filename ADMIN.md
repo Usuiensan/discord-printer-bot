@@ -51,7 +51,10 @@ Get-Printer | Select-Object Name
 - `AUTHOR_AVATAR_WIDTH_DOTS`: 発言者アイコンの印刷幅
 - `IMAGE_DITHER_MODE`: 画像変換方式。`ordered` は網点でグレーを表現、`threshold` は単純な白黒2値
 - `IMAGE_MAX_BYTES`: 画像ダウンロード上限。画像は印刷幅まで縮小されます
-- `PRINT_URL_QR`: URL を QR コードとして印刷するか
+- `URL_QR_MODE`: `manual` なら通常URLは文字だけ、`auto` なら検出したURLもQR印刷します
+- `PRINT_URL_QR`: 互換用。`URL_QR_MODE` 未設定時だけ参照されます
+- `EMOJI_RENDER_MODE`: `inline_image`、`alias_append`、`text`。絵文字画像の印字方式
+- `EMOJI_IMAGE_WIDTH_DOTS`: 絵文字画像の最大印刷幅
 - `QR_MODULE_SIZE`: QR コードのドットサイズ
 - `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
 - `BARCODE_HRI`: 1次元バーコードの人間可読テキスト位置。`none`、`above`、`below`、`both`
@@ -254,7 +257,7 @@ RAW_ESCPOS_MAX_BYTES=4096
 
 ## 注意
 
-- Unicode 絵文字は Twemoji CDN から画像を取得して印刷します。インターネット接続が必要です。
+- Unicode 絵文字は Twemoji CDN から画像を取得して印刷します。`EMOJI_RENDER_MODE=inline_image` では出現位置ごとに印字し、`alias_append` では重複排除して末尾に印字します。
 - Discord のユーザーアイコン、スタンプ、添付画像も Discord CDN から取得します。
 - 動画、音声、PDF など画像ではない添付ファイルは印刷されません。
 - 日本語は Shift_JIS/CP932 と ESC/POS 漢字モードで送ります。プリンタ側の日本語フォント対応が必要です。

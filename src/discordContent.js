@@ -7,6 +7,7 @@ const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
+const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0000$/;
 
 export async function buildPrintJob(message, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
@@ -22,7 +23,7 @@ export async function buildPrintJob(message, config, options = {}) {
   const contentMessage = symbolExtraction.commands.length > 0
     ? { ...message, content: symbolExtraction.text }
     : message;
-  const { text, imageItems, urls } = extractMessageContent(contentMessage);
+  const { text, imageItems, urls } = extractMessageContent(contentMessage, config);
   const imageState = createInlineImageState();
 
   await printTextBlock(printer, text, warnings, {
@@ -49,7 +50,7 @@ export async function buildPrintJob(message, config, options = {}) {
     appendSymbolItems(printer, symbolExtraction.commands, config);
   }
 
-  if (!hasPrintableMessageContent(contentMessage) && symbolExtraction.commands.length === 0) {
+  if (!hasPrintableMessageContent(contentMessage, config) && symbolExtraction.commands.length === 0) {
     printTextLine(printer, '[印刷できる本文がありません]', warnings);
   }
 
@@ -133,7 +134,7 @@ export function buildPreviewText(message, config) {
   const contentMessage = symbolExtraction.commands.length > 0
     ? { ...message, content: symbolExtraction.text }
     : { ...message, content };
-  const { text, imageItems, urls } = extractMessageContent(contentMessage);
+  const { text, imageItems, urls } = extractMessageContent(contentMessage, config);
   const imageState = createInlineImageState();
   const lines = renderTextPreview(text, {
     prefix: config.messageCommandPrefix,
@@ -198,6 +199,9 @@ async function printTextBlock(printer, text, warnings, options = {}) {
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
+    const inlineImageResult = await applyInlineImageMarker(printer, rawLine, warnings, options);
+    if (inlineImageResult.applied) continue;
+
     const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -267,6 +271,9 @@ function renderTextPreview(text, options = {}) {
   const lines = [];
 
   for (const rawLine of printableText.trim().split(/\r?\n/)) {
+    const inlineImageResult = applyPreviewInlineImageMarker(lines, rawLine, options);
+    if (inlineImageResult.applied) continue;
+
     const imageResult = applyPreviewInlineImageCommand(lines, rawLine, options);
     if (imageResult.applied) continue;
     if (imageResult.error) {
@@ -852,8 +859,29 @@ function printTextInline(printer, text, warnings) {
 
 function createInlineImageState() {
   return {
-    printedAttachmentIndexes: new Set()
+    printedAttachmentIndexes: new Set(),
+    printedInlineImageKeys: new Set()
   };
+}
+
+async function applyInlineImageMarker(printer, line, warnings, options) {
+  const match = String(line).match(INLINE_IMAGE_MARKER_RE);
+  if (!match) return { applied: false };
+
+  const [, key] = match;
+  const item = findInlineImageItem(options.imageItems, key);
+  if (!item) {
+    printTextLine(printer, '[画像取得失敗: 絵文字画像]', warnings);
+    warnings.push('絵文字画像マーカーに対応する画像がありません');
+    return { applied: true };
+  }
+
+  await printImageItems(printer, [item], options.config, warnings, {
+    maxWidthDots: options.config.emojiImageWidthDots,
+    printLabel: false
+  });
+  options.imageState?.printedInlineImageKeys.add(key);
+  return { applied: true };
 }
 
 async function applyInlineImageCommand(printer, line, warnings, options) {
@@ -873,6 +901,17 @@ async function applyInlineImageCommand(printer, line, warnings, options) {
     printLabel: !command.noText
   });
   options.imageState?.printedAttachmentIndexes.add(command.index);
+  return { applied: true };
+}
+
+function applyPreviewInlineImageMarker(lines, line, options) {
+  const match = String(line).match(INLINE_IMAGE_MARKER_RE);
+  if (!match) return { applied: false };
+
+  const [, key, label] = match;
+  const item = findInlineImageItem(options.imageItems, key);
+  lines.push(item?.previewLabel ?? `[絵文字画像: ${label || 'emoji'}]`);
+  options.imageState?.printedInlineImageKeys.add(key);
   return { applied: true };
 }
 
@@ -920,8 +959,13 @@ function findAttachmentImageItem(imageItems = [], index) {
   return imageItems.find((item) => item.source === 'attachment' && item.attachmentIndex === index) ?? null;
 }
 
+function findInlineImageItem(imageItems = [], key) {
+  return imageItems.find((item) => item.inlineKey === key) ?? null;
+}
+
 function remainingImageItems(imageItems = [], imageState = createInlineImageState()) {
   return imageItems.filter((item) => {
+    if (item.source === 'emoji_inline') return !imageState.printedInlineImageKeys.has(item.inlineKey);
     if (item.source !== 'attachment') return true;
     return !imageState.printedAttachmentIndexes.has(item.attachmentIndex);
   });
@@ -1014,7 +1058,7 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
   if (snapshots.length === 0) return;
 
   for (const snapshot of snapshots) {
-    const { text, imageItems, urls } = extractMessageContent(snapshot);
+    const { text, imageItems, urls } = extractMessageContent(snapshot, config);
     const imageState = createInlineImageState();
 
     printTextLine(printer, '[転送メッセージ]', warnings);
@@ -1040,14 +1084,14 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
   }
 }
 
-function hasPrintableMessageContent(message) {
-  const own = extractMessageContent(message);
+function hasPrintableMessageContent(message, config) {
+  const own = extractMessageContent(message, config);
   if (own.text.trim() || own.imageItems.length > 0 || valuesOf(message.stickers).length > 0) {
     return true;
   }
 
   for (const snapshot of valuesOf(message.messageSnapshots)) {
-    const forwarded = extractMessageContent(snapshot);
+    const forwarded = extractMessageContent(snapshot, config);
     if (forwarded.text.trim() || forwarded.imageItems.length > 0 || valuesOf(snapshot.stickers).length > 0) {
       return true;
     }
@@ -1285,18 +1329,28 @@ function escapeXml(value) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function extractMessageContent(message) {
+function extractMessageContent(message, config = {}) {
   const imageItems = [];
   const seenEmojiImages = new Set();
+  let inlineEmojiIndex = 0;
   let text = stripCodeMarkers(message.content ?? '');
   const urls = extractUrls(text);
+  const emojiRenderMode = normalizeEmojiRenderMode(config.emojiRenderMode);
 
   text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
-    pushUniqueEmojiImage(imageItems, seenEmojiImages, {
+    const item = {
       key: `custom:${id}`,
       label: `[絵文字: :${name}:]`,
+      previewLabel: `[絵文字画像: :${name}:]`,
       url: `https://cdn.discordapp.com/emojis/${id}.png?size=128&quality=lossless`,
-    });
+    };
+    if (emojiRenderMode === 'inline_image') {
+      inlineEmojiIndex += 1;
+      return pushInlineEmojiImage(imageItems, item, inlineEmojiIndex, `:${name}:`);
+    }
+    if (emojiRenderMode === 'alias_append') {
+      pushUniqueEmojiImage(imageItems, seenEmojiImages, item);
+    }
     return `:${name}:`;
   });
 
@@ -1307,11 +1361,19 @@ function extractMessageContent(message) {
     }
 
     const codepointName = emojiCodepointName(emoji);
-    pushUniqueEmojiImage(imageItems, seenEmojiImages, {
+    const item = {
       key: `unicode:${codepointName}`,
       label: `[絵文字: :emoji_${codepointName}:]`,
+      previewLabel: `[絵文字画像: :emoji_${codepointName}:]`,
       urls: twemojiUrls(emoji),
-    });
+    };
+    if (emojiRenderMode === 'inline_image') {
+      inlineEmojiIndex += 1;
+      return pushInlineEmojiImage(imageItems, item, inlineEmojiIndex, `:emoji_${codepointName}:`);
+    }
+    if (emojiRenderMode === 'alias_append') {
+      pushUniqueEmojiImage(imageItems, seenEmojiImages, item);
+    }
     return `:emoji_${codepointName}:`;
   });
 
@@ -1341,6 +1403,10 @@ function extractMessageContent(message) {
   return { text: text.replace(/[ \t]+\n/g, '\n'), imageItems, urls };
 }
 
+function normalizeEmojiRenderMode(value) {
+  return ['inline_image', 'alias_append', 'text'].includes(value) ? value : 'inline_image';
+}
+
 function shouldKeepEmojiAsText(emoji) {
   return Array.from(emoji).some((char) => TEXT_FALLBACK_EMOJI.has(char.codePointAt(0)));
 }
@@ -1349,6 +1415,20 @@ function pushUniqueEmojiImage(imageItems, seenEmojiImages, item) {
   if (seenEmojiImages.has(item.key)) return;
   seenEmojiImages.add(item.key);
   imageItems.push(item);
+}
+
+function pushInlineEmojiImage(imageItems, item, index, label) {
+  const inlineKey = `emoji${index}`;
+  imageItems.push({
+    ...item,
+    source: 'emoji_inline',
+    inlineKey,
+  });
+  return `\n${inlineImageMarker(inlineKey, label)}\n`;
+}
+
+function inlineImageMarker(key, label) {
+  return `\u0000INLINEIMAGE:${key}:${label}\u0000`;
 }
 
 function formatDiscordMarkdownForPrint(text) {
