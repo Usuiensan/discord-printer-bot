@@ -5,6 +5,7 @@ import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLin
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
+const TEXT_EXT_RE = /\.(txt|text|md|markdown|csv|tsv|json|jsonl|log|ini|conf|cfg|yaml|yml|xml|html?|css|js|mjs|cjs|ts|tsx|jsx|ps1|bat|cmd|sh|py|rb|php|java|c|h|cpp|hpp|cs|rs|go|sql)(\?.*)?$/i;
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
 const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0000$/;
@@ -23,7 +24,7 @@ export async function buildPrintJob(message, config, options = {}) {
   const contentMessage = symbolExtraction.commands.length > 0
     ? { ...message, content: symbolExtraction.text }
     : message;
-  const { text, imageItems, urls } = extractMessageContent(contentMessage, config);
+  const { text, imageItems, urls } = await extractMessageContent(contentMessage, config);
   const imageState = createInlineImageState();
 
   await printTextBlock(printer, text, warnings, {
@@ -50,7 +51,7 @@ export async function buildPrintJob(message, config, options = {}) {
     appendSymbolItems(printer, symbolExtraction.commands, config);
   }
 
-  if (!hasPrintableMessageContent(contentMessage, config) && symbolExtraction.commands.length === 0) {
+  if (!(await hasPrintableMessageContent(contentMessage, config)) && symbolExtraction.commands.length === 0) {
     printTextLine(printer, '[印刷できる本文がありません]', warnings);
   }
 
@@ -128,13 +129,18 @@ export async function appendDiscordHeader(printer, message, config, options = {}
   return warnings;
 }
 
-export function buildPreviewText(message, config) {
+export async function buildPreviewText(message, config) {
+  const rows = await buildPreviewRows(message, config);
+  return rows.map((line) => line.text).join('\n') || '[印刷できる本文がありません]';
+}
+
+async function buildPreviewRows(message, config) {
   const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
   const symbolExtraction = extractSymbolMessageCommands(content, config.messageCommandPrefix);
   const contentMessage = symbolExtraction.commands.length > 0
     ? { ...message, content: symbolExtraction.text }
     : { ...message, content };
-  const { text, imageItems, urls } = extractMessageContent(contentMessage, config);
+  const { text, imageItems, urls } = await extractMessageContent(contentMessage, config);
   const imageState = createInlineImageState();
   const lines = renderTextPreview(text, {
     prefix: config.messageCommandPrefix,
@@ -143,47 +149,59 @@ export function buildPreviewText(message, config) {
   });
 
   if (config.printUrlQr && urls.length > 0) {
-    for (const url of urls) lines.push(`[QR: ${url}]`);
+    for (const url of urls) lines.push(previewLine(`[QR: ${url}]`));
   }
 
   for (const item of remainingImageItems(imageItems, imageState)) {
     if (item.label?.startsWith('[絵文字:')) {
-      lines.push(item.label);
+      lines.push(previewLine(item.label));
     } else {
-      lines.push(item.label ?? '[画像]');
+      lines.push(previewLine(item.label ?? '[画像]'));
     }
   }
 
   for (const sticker of valuesOf(message.stickers)) {
-    lines.push(`[スタンプ: ${sticker.name ?? sticker.id}]`);
+    lines.push(previewLine(`[スタンプ: ${sticker.name ?? sticker.id}]`));
   }
 
-  lines.push(...formatSymbolPreviewLines(symbolExtraction.commands));
+  lines.push(...formatSymbolPreviewLines(symbolExtraction.commands).map((line) => previewLine(line)));
 
-  return lines.length > 0 ? lines.join('\n') : '[印刷できる本文がありません]';
+  return lines.length > 0 ? lines : [previewLine('[印刷できる本文がありません]')];
 }
 
 export async function buildPreviewImage(message, config) {
-  const preview = buildPreviewText(message, config);
-  const lines = preview
-    .split(/\r?\n/)
-    .flatMap((line) => wrapText(line, 42));
+  const lines = await buildPreviewRows(message, config);
   const padding = 16;
-  const fontSize = 18;
-  const lineHeight = 24;
+  const baseFontSize = 18;
+  const baseLineHeight = 24;
   const width = config.printWidthDots ?? 384;
-  const height = Math.max(80, padding * 2 + lines.length * lineHeight);
+  const measuredLines = lines.map((line) => {
+    const fontSize = previewFontSize(line, baseFontSize);
+    return {
+      ...line,
+      fontSize,
+      lineHeight: Math.ceil(baseLineHeight * Math.max(1, line.sizeY ?? 1) * (line.small ? 0.75 : 1))
+    };
+  });
+  const height = Math.max(80, padding * 2 + measuredLines.reduce((sum, line) => sum + line.lineHeight, 0));
   const fontFace = systemFontFaceCss();
-  const tspans = lines.map((line, index) => {
-    const y = padding + fontSize + index * lineHeight;
-    return `<text x="${padding}" y="${y}" xml:space="preserve">${escapeXml(line)}</text>`;
+  let y = padding;
+  const tspans = measuredLines.map((line) => {
+    y += line.lineHeight;
+    const anchor = line.align === 'center' ? 'middle' : line.align === 'right' ? 'end' : 'start';
+    const x = line.align === 'center' ? Math.round(width / 2) : line.align === 'right' ? width - padding : padding;
+    const weight = line.bold ? '700' : '400';
+    const decoration = line.underline ? ' text-decoration=\"underline\"' : '';
+    const baselineY = y - Math.max(4, Math.round(line.lineHeight * 0.25));
+    const scaleX = Math.max(1, line.sizeX ?? 1);
+    return `<text x="0" y="0" transform="translate(${x} ${baselineY}) scale(${scaleX} 1)" text-anchor="${anchor}" font-size="${line.fontSize}" font-weight="${weight}"${decoration} xml:space="preserve">${escapeXml(line.text)}</text>`;
   }).join('\n');
 
   const svg = Buffer.from(`
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <style>
     ${fontFace}
-    text { font-family: HeaderFont, "MS Gothic", monospace; font-size: ${fontSize}px; fill: #000; }
+    text { font-family: HeaderFont, "MS Gothic", monospace; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
   ${tspans}
@@ -199,7 +217,10 @@ async function printTextBlock(printer, text, warnings, options = {}) {
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
-    const inlineImageResult = await applyInlineImageMarker(printer, rawLine, warnings, options);
+    const inlineImageResult = await applyInlineImageMarker(printer, rawLine, warnings, {
+      ...options,
+      layoutState
+    });
     if (inlineImageResult.applied) continue;
 
     const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
@@ -271,27 +292,28 @@ function renderTextPreview(text, options = {}) {
   const lines = [];
 
   for (const rawLine of printableText.trim().split(/\r?\n/)) {
-    const inlineImageResult = applyPreviewInlineImageMarker(lines, rawLine, options);
+    const previewOptions = { ...options, layoutState };
+    const inlineImageResult = applyPreviewInlineImageMarker(lines, rawLine, previewOptions);
     if (inlineImageResult.applied) continue;
 
-    const imageResult = applyPreviewInlineImageCommand(lines, rawLine, options);
+    const imageResult = applyPreviewInlineImageCommand(lines, rawLine, previewOptions);
     if (imageResult.applied) continue;
     if (imageResult.error) {
-      lines.push(`[画像コマンドエラー: ${imageResult.error}]`);
+      lines.push(previewLine(`[画像コマンドエラー: ${imageResult.error}]`, layoutState));
       continue;
     }
 
     const receiptResult = applyPreviewReceiptCommand(lines, rawLine, layoutState);
     if (receiptResult.applied) continue;
     if (receiptResult.error) {
-      lines.push(`[レシートコマンドエラー: ${receiptResult.error}]`);
+      lines.push(previewLine(`[レシートコマンドエラー: ${receiptResult.error}]`, layoutState));
       continue;
     }
 
     const controlResult = applyPreviewControlCommand(rawLine, layoutState);
     if (controlResult.applied) continue;
     if (controlResult.error) {
-      lines.push(`[ESC/POSコマンドエラー: ${controlResult.error}]`);
+      lines.push(previewLine(`[ESC/POSコマンドエラー: ${controlResult.error}]`, layoutState));
       continue;
     }
 
@@ -313,7 +335,11 @@ function renderTextPreview(text, options = {}) {
 
     const maxCols = isSmall ? 42 : Math.floor(32 / size);
     for (const line of wrapText(previewPrintableText(textToPrint), maxCols)) {
-      lines.push(line);
+      lines.push(previewLine(line, layoutState, {
+        sizeX: Math.max(1, (layoutState.sizeX ?? 1) * size),
+        sizeY: Math.max(1, (layoutState.sizeY ?? 1) * size),
+        small: layoutState.small || isSmall
+      }));
     }
   }
 
@@ -331,18 +357,22 @@ function applyEscPosTextCommand(printer, line, layoutState = createLayoutState()
   try {
     switch (command) {
       case 'left':
+        layoutState.align = 'left';
         printer.align('left');
         return { applied: true };
       case 'center':
       case 'centre':
+        layoutState.align = 'center';
         printer.align('center');
         return { applied: true };
       case 'right':
+        layoutState.align = 'right';
         printer.align('right');
         return { applied: true };
       case 'align':
         requireArgs(command, args, 1);
-        printer.align(normalizeAlignValue(args[0]));
+        layoutState.align = normalizeAlignValue(args[0]);
+        printer.align(layoutState.align);
         return { applied: true };
       case 'bold':
         printer.bold(parseOnOff(args[0], true));
@@ -392,11 +422,13 @@ function applyEscPosTextCommand(printer, line, layoutState = createLayoutState()
         printer.size(layoutState.sizeX, clampMultiplier(args[1]));
         return { applied: true };
       case 'normal':
+        layoutState.align = 'left';
         layoutState.small = false;
         layoutState.sizeX = 1;
         printer.bold(false).underline(false).invert(false).rotate90(false).upsideDown(false).smallText(false).size(1, 1).align('left');
         return { applied: true };
       case 'reset':
+        layoutState.align = 'left';
         layoutState.small = false;
         layoutState.sizeX = 1;
         printer.initialize();
@@ -594,9 +626,30 @@ function normalizeCommandName(value) {
 
 function createLayoutState() {
   return {
+    align: 'left',
+    bold: false,
+    underline: false,
     small: false,
     sizeX: 1,
+    sizeY: 1,
   };
+}
+
+function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
+  return {
+    text: String(text ?? ''),
+    align: overrides.align ?? layoutState.align ?? 'left',
+    bold: overrides.bold ?? layoutState.bold ?? false,
+    underline: overrides.underline ?? layoutState.underline ?? false,
+    small: overrides.small ?? layoutState.small ?? false,
+    sizeX: overrides.sizeX ?? layoutState.sizeX ?? 1,
+    sizeY: overrides.sizeY ?? layoutState.sizeY ?? 1,
+  };
+}
+
+function previewFontSize(line, baseFontSize) {
+  const smallScale = line.small ? 0.75 : 1;
+  return Math.max(8, Math.round(baseFontSize * Math.max(1, line.sizeY ?? 1) * smallScale));
 }
 
 function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
@@ -653,7 +706,7 @@ function applyPreviewReceiptCommand(lines, line, layoutState) {
     if (!command) return { applied: false };
 
     for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
-      lines.push(previewPrintableText(outputLine));
+      lines.push(previewLine(previewPrintableText(outputLine), layoutState));
     }
     return { applied: true };
   } catch (error) {
@@ -741,32 +794,53 @@ function applyPreviewControlCommand(line, layoutState) {
 
   try {
     switch (command) {
+      case 'left':
+        layoutState.align = 'left';
+        return { applied: true };
+      case 'center':
+      case 'centre':
+        layoutState.align = 'center';
+        return { applied: true };
+      case 'right':
+        layoutState.align = 'right';
+        return { applied: true };
+      case 'align':
+        requireArgs(command, args, 1);
+        layoutState.align = normalizeAlignValue(args[0]);
+        return { applied: true };
+      case 'bold':
+        layoutState.bold = parseOnOff(args[0], true);
+        return { applied: true };
+      case 'underline':
+        layoutState.underline = args[0] === '2' || normalizeCommandName(args[0]) === 'thick' ? true : parseOnOff(args[0], true);
+        return { applied: true };
       case 'small':
         layoutState.small = parseOnOff(args[0], true);
         return { applied: true };
       case 'size':
         requireArgs(command, args, 2);
         layoutState.sizeX = clampMultiplier(args[0]);
+        layoutState.sizeY = clampMultiplier(args[1]);
         return { applied: true };
       case 'printmode':
       case 'print_mode':
         {
           const mode = parsePrintModeArgs(args);
           if (Object.hasOwn(mode, 'doubleWidth')) layoutState.sizeX = mode.doubleWidth ? 2 : 1;
+          if (Object.hasOwn(mode, 'doubleHeight')) layoutState.sizeY = mode.doubleHeight ? 2 : 1;
+          if (Object.hasOwn(mode, 'bold')) layoutState.bold = mode.bold;
+          if (Object.hasOwn(mode, 'underline')) layoutState.underline = Boolean(mode.underline);
         }
         return { applied: true };
       case 'normal':
       case 'reset':
         layoutState.small = false;
         layoutState.sizeX = 1;
+        layoutState.sizeY = 1;
+        layoutState.bold = false;
+        layoutState.underline = false;
+        layoutState.align = 'left';
         return { applied: true };
-      case 'left':
-      case 'center':
-      case 'centre':
-      case 'right':
-      case 'align':
-      case 'bold':
-      case 'underline':
       case 'doublestrike':
       case 'double_strike':
       case 'invert':
@@ -880,6 +954,9 @@ async function applyInlineImageMarker(printer, line, warnings, options) {
     maxWidthDots: options.config.emojiImageWidthDots,
     printLabel: false
   });
+  // Raster image output centers the image and then returns the printer to left
+  // alignment. Restore the active text alignment so !center/!right persists.
+  printer.align(options.layoutState?.align ?? 'left');
   options.imageState?.printedInlineImageKeys.add(key);
   return { applied: true };
 }
@@ -910,7 +987,7 @@ function applyPreviewInlineImageMarker(lines, line, options) {
 
   const [, key, label] = match;
   const item = findInlineImageItem(options.imageItems, key);
-  lines.push(item?.previewLabel ?? `[絵文字画像: ${label || 'emoji'}]`);
+  lines.push(previewLine(item?.previewLabel ?? `[絵文字画像: ${label || 'emoji'}]`, options.layoutState));
   options.imageState?.printedInlineImageKeys.add(key);
   return { applied: true };
 }
@@ -927,7 +1004,7 @@ function applyPreviewInlineImageCommand(lines, line, options) {
 
   const sizeText = command.widthPercent ? ` ${command.widthPercent}%` : '';
   const label = command.noText ? `[画像${command.index}: ラベルなし]` : (item.label ?? `[画像${command.index}]`);
-  lines.push(`${label}${sizeText}`);
+  lines.push(previewLine(`${label}${sizeText}`, options.layoutState));
   options.imageState?.printedAttachmentIndexes.add(command.index);
   return { applied: true };
 }
@@ -1058,7 +1135,7 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
   if (snapshots.length === 0) return;
 
   for (const snapshot of snapshots) {
-    const { text, imageItems, urls } = extractMessageContent(snapshot, config);
+    const { text, imageItems, urls } = await extractMessageContent(snapshot, config);
     const imageState = createInlineImageState();
 
     printTextLine(printer, '[転送メッセージ]', warnings);
@@ -1084,14 +1161,14 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
   }
 }
 
-function hasPrintableMessageContent(message, config) {
-  const own = extractMessageContent(message, config);
+async function hasPrintableMessageContent(message, config) {
+  const own = await extractMessageContent(message, config);
   if (own.text.trim() || own.imageItems.length > 0 || valuesOf(message.stickers).length > 0) {
     return true;
   }
 
   for (const snapshot of valuesOf(message.messageSnapshots)) {
-    const forwarded = extractMessageContent(snapshot, config);
+    const forwarded = await extractMessageContent(snapshot, config);
     if (forwarded.text.trim() || forwarded.imageItems.length > 0 || valuesOf(snapshot.stickers).length > 0) {
       return true;
     }
@@ -1329,13 +1406,25 @@ function escapeXml(value) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function extractMessageContent(message, config = {}) {
+async function extractMessageContent(message, config = {}) {
   const imageItems = [];
   const seenEmojiImages = new Set();
   let inlineEmojiIndex = 0;
   let text = stripCodeMarkers(message.content ?? '');
-  const urls = extractUrls(text);
   const emojiRenderMode = normalizeEmojiRenderMode(config.emojiRenderMode);
+  const textAttachmentBlocks = [];
+
+  for (const attachment of valuesOf(message.attachments)) {
+    if (isTextAttachment(attachment) && !isImageAttachment(attachment)) {
+      textAttachmentBlocks.push(await fetchTextAttachmentBlock(attachment, config));
+    }
+  }
+
+  if (textAttachmentBlocks.length > 0) {
+    text = [text, ...textAttachmentBlocks].filter((part) => part.trim()).join('\n');
+  }
+
+  const urls = extractUrls(text);
 
   text = text.replace(CUSTOM_EMOJI_RE, (_match, name, id) => {
     const item = {
@@ -1562,7 +1651,28 @@ function isImageAttachment(attachment) {
   return IMAGE_EXT_RE.test(attachment.name ?? attachment.url ?? '');
 }
 
+function isTextAttachment(attachment) {
+  if (attachment.contentType?.startsWith('text/')) return true;
+  if (['application/json', 'application/xml', 'application/yaml', 'application/x-yaml'].includes(attachment.contentType)) return true;
+  return TEXT_EXT_RE.test(attachment.name ?? attachment.url ?? '');
+}
+
+async function fetchTextAttachmentBlock(attachment, config) {
+  const label = attachment.name || attachment.id || 'text';
+  try {
+    const bytes = await fetchAttachmentBytes(attachment.url, config.textAttachmentMaxBytes, 'Text attachment');
+    return decodeTextAttachment(bytes).replace(/\s+$/g, '');
+  } catch (error) {
+    console.error(`Failed to print text attachment ${attachment.url}:`, error);
+    return `[テキスト取得失敗: ${label} ${error.message}]`;
+  }
+}
+
 async function fetchImage(url, config) {
+  return fetchAttachmentBytes(url, config.imageMaxBytes, 'Image');
+}
+
+async function fetchAttachmentBytes(url, maxBytes, label) {
   const response = await fetch(url, {
     headers: {
       'User-Agent': 'discord-printer-bot/0.1',
@@ -1574,16 +1684,32 @@ async function fetchImage(url, config) {
   }
 
   const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > config.imageMaxBytes) {
-    throw new Error(`Image is too large: ${contentLength} bytes`);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`${label} is too large: ${contentLength} bytes`);
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength > config.imageMaxBytes) {
-    throw new Error(`Image is too large: ${arrayBuffer.byteLength} bytes`);
+  if (arrayBuffer.byteLength > maxBytes) {
+    throw new Error(`${label} is too large: ${arrayBuffer.byteLength} bytes`);
   }
 
   return Buffer.from(arrayBuffer);
+}
+
+function decodeTextAttachment(bytes) {
+  const withoutBom = stripUtf8Bom(bytes);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(withoutBom);
+  } catch {
+    return new TextDecoder('shift_jis').decode(bytes);
+  }
+}
+
+function stripUtf8Bom(bytes) {
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return bytes.subarray(3);
+  }
+  return bytes;
 }
 
 async function fetchFirstImage(urls, config) {

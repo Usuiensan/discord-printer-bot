@@ -72,6 +72,7 @@ export const config = {
   authorAvatarWidthDots: intEnv('AUTHOR_AVATAR_WIDTH_DOTS', 96),
   imageDitherMode: optionalEnv('IMAGE_DITHER_MODE', 'ordered'),
   imageMaxBytes: intEnv('IMAGE_MAX_BYTES', 32 * 1024 * 1024),
+  textAttachmentMaxBytes: intEnv('TEXT_ATTACHMENT_MAX_BYTES', 256 * 1024),
   urlQrMode,
   printUrlQr: urlQrMode === 'auto',
   emojiRenderMode: enumEnv('EMOJI_RENDER_MODE', 'inline_image', ['inline_image', 'alias_append', 'text']),

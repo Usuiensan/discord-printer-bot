@@ -355,9 +355,15 @@ function estimateOneDimensionalWidthDots(type, preparedData, moduleWidth) {
 }
 
 function estimateCode128WidthDots(preparedData, moduleWidth) {
-  const codeSet = preparedData.slice(0, 2);
+  const codeSet = Buffer.isBuffer(preparedData)
+    ? preparedData.subarray(0, 2).toString('ascii')
+    : preparedData.slice(0, 2);
   const bodyLength = Math.max(0, preparedData.length - 2);
-  const dataCodeCount = codeSet === '{C' ? Math.ceil(bodyLength / 2) : bodyLength;
+  // Binary Code Set C data is already one codeword per digit pair. Keep the
+  // string calculation for legacy/GS1 values that are still represented as text.
+  const dataCodeCount = codeSet === '{C' && !Buffer.isBuffer(preparedData)
+    ? Math.ceil(bodyLength / 2)
+    : bodyLength;
   const startCheckStopModules = 11 + 11 + 13;
   return (dataCodeCount * 11 + startCheckStopModules) * moduleWidth;
 }
@@ -367,15 +373,25 @@ function prepareOneDimensionalData(type, data) {
     return prepareGs1Data(data);
   }
   if (type === 'code128c') {
-    return `{C${data}`;
+    return encodeCode128C(data);
   }
   if (type === 'code128' && !data.startsWith('{')) {
     if (/^\d+$/.test(data) && data.length % 2 === 0) {
-      return `{C${data}`;
+      return encodeCode128C(data);
     }
     return `{B${data}`;
   }
   return data;
+}
+
+// Epson's GS k CODE128 command expects Code Set C data as binary codewords:
+// "123456" must be sent as {C, 0x0c, 0x22, 0x38 (12, 34, 56), not ASCII digits.
+function encodeCode128C(data) {
+  const pairs = String(data).match(/\d{2}/g) ?? [];
+  return Buffer.concat([
+    Buffer.from('{C', 'ascii'),
+    Buffer.from(pairs.map((pair) => Number.parseInt(pair, 10)))
+  ]);
 }
 
 function validateCode128CInput(data) {

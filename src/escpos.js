@@ -291,7 +291,9 @@ export class EscPosBuilder {
   }
 
   barcode(type, value, { width = 3, height = 96, hri = 'below' } = {}) {
-    const data = Buffer.from(value, 'ascii');
+    // Code Set C may contain binary codewords (including 0x00), so preserve
+    // Buffers supplied by symbolContent instead of converting them as ASCII.
+    const data = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value, 'ascii');
     if (data.length === 0 || data.length > 255) return this;
 
     const typeMap = {
