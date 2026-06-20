@@ -48,7 +48,7 @@ export async function buildPrintJob(message, config, options = {}) {
   await printForwardedSnapshots(printer, message, config, warnings);
 
   if (symbolExtraction.commands.length > 0) {
-    appendSymbolItems(printer, symbolExtraction.commands, config);
+    await appendSymbolItems(printer, symbolExtraction.commands, config);
   }
 
   if (!(await hasPrintableMessageContent(contentMessage, config)) && symbolExtraction.commands.length === 0) {
