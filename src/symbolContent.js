@@ -119,17 +119,23 @@ async function printSymbolItem(printer, { type, data, compositeData, lineType, r
 async function printRotatedBarcodeImage(printer, type, data, printText, config) {
   const bcid = bwipBarcodeType(type);
   const text = bwipBarcodeText(type, data);
-  const svg = bwipjs.toSVG({
+  // Generate an already pixel-aligned bitmap. SVG rasterization can
+  // anti-alias narrow bars and make the printed symbol unreadable.
+  const png = await bwipjs.toBuffer({
     bcid,
     text,
-    scale: 2,
+    scale: 3,
     height: 14,
     includetext: printText,
     textxalign: 'center',
     rotate: 'R',
+    // Ten modules at each end of the bars, plus side protection. Because the
+    // symbol is rotated, paddingwidth becomes the top/bottom quiet zone.
+    paddingwidth: 10,
+    paddingheight: 4,
     backgroundcolor: 'FFFFFF'
   });
-  await printer.image(Buffer.from(svg), {
+  await printer.image(png, {
     maxWidth: config.printWidthDots ?? printer.widthDots,
     dither: 'threshold'
   });
@@ -363,7 +369,8 @@ function validateSymbolInput(type, data, compositeData, config = {}, options = {
   validateOneDimensionalWidth(
     type,
     data,
-    options.rotated ? ROTATED_BARCODE_MAX_LENGTH_DOTS : (config.printWidthDots ?? 384)
+    options.rotated ? ROTATED_BARCODE_MAX_LENGTH_DOTS : (config.printWidthDots ?? 384),
+    options.rotated ? 3 : 2
   );
   if (type === 'code128c') {
     validateCode128CInput(data);
@@ -388,10 +395,10 @@ function estimateCode39WidthDots(data, moduleWidth) {
   return (data.length + startStopChars) * modulesPerCharWithGap * moduleWidth;
 }
 
-function validateOneDimensionalWidth(type, data, printWidthDots) {
+function validateOneDimensionalWidth(type, data, printWidthDots, moduleWidth = 2) {
   if (!ONE_D_TYPES.has(type)) return;
   const preparedData = prepareOneDimensionalData(type, data);
-  const estimatedDots = estimateOneDimensionalWidthDots(type, preparedData, 2);
+  const estimatedDots = estimateOneDimensionalWidthDots(type, preparedData, moduleWidth);
   if (estimatedDots > printWidthDots) {
     throw new Error(`${typeLabel(type)} が長すぎます（推定 ${estimatedDots} dots / 印字幅 ${printWidthDots} dots）。短いデータにするか、QRコードを使ってください。`);
   }
