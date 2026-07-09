@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -32,14 +33,31 @@ const HARD_PRINTER_PROBLEMS = new Set([
 const WARNING_ONLY_PRINTER_PROBLEMS = new Set([
   'レシート用紙残量少'
 ]);
+const LINUX_STATUS_REQUESTS = [
+  ['printer', 1],
+  ['offline', 2],
+  ['error', 3],
+  ['paper', 4]
+];
 
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
-  if (options.printBridgeUrl) {
+  const backend = resolvePrinterBackend(options);
+  if (backend === 'bridge') {
     await sendRawToPrintBridge(bytes, printerName, options);
+    return;
+  }
+  if (backend === 'linux-usb') {
+    await sendRawToLinuxUsbPrinter(bytes, options);
     return;
   }
 
   await sendRawToLocalPrinter(bytes, printerName, options);
+}
+
+function resolvePrinterBackend(options = {}) {
+  if (options.printerBackend) return options.printerBackend;
+  if (options.printBridgeUrl) return 'bridge';
+  return 'windows';
 }
 
 export async function sendRawToLocalPrinter(bytes, printerName, options = {}) {
@@ -79,11 +97,34 @@ export async function assertPrinterReady(printerName, options = {}) {
 }
 
 export async function checkPrinterProblems(printerName, options = {}) {
-  if (options.printBridgeUrl) {
+  const backend = resolvePrinterBackend(options);
+  if (backend === 'bridge') {
     return checkPrintBridgeProblems(printerName, options);
+  }
+  if (backend === 'linux-usb') {
+    return checkLinuxUsbPrinterProblems(options);
   }
 
   return checkLocalPrinterProblems(printerName, options);
+}
+
+export async function sendRawToLinuxUsbPrinter(bytes, options = {}) {
+  await retryPrintOperation(async () => {
+    await assertPrinterReady('', options);
+    await writeLinuxUsbDevice(resolveLinuxPrinterDevice(options), bytes);
+  }, options);
+  await waitForPrinterSettled('', options);
+}
+
+async function checkLinuxUsbPrinterProblems(options = {}) {
+  if (options.linuxStatusEnabled === false) return [];
+  try {
+    const status = await getLinuxUsbPrinterStatus(options);
+    return describeEscposRealtimeStatus(status);
+  } catch (error) {
+    console.warn(`Linux USB printer status check failed: ${error.message}`);
+    return ['オフライン'];
+  }
 }
 
 export async function checkLocalPrinterProblems(printerName, options = {}) {
@@ -130,6 +171,72 @@ async function sendRawToPrintBridge(bytes, printerName, options) {
   if (!response.ok) {
     throw printBridgeError(response, body);
   }
+}
+
+async function writeLinuxUsbDevice(devicePath, bytes) {
+  const handle = await open(devicePath, 'w');
+  try {
+    await handle.write(Buffer.from(bytes), 0, bytes.length);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function getLinuxUsbPrinterStatus(options = {}) {
+  const devicePath = resolveLinuxPrinterDevice(options);
+  const timeoutMs = Math.max(100, Number.parseInt(options.linuxStatusTimeoutMs ?? 1000, 10) || 1000);
+  const flags = fsConstants.O_RDWR | fsConstants.O_NONBLOCK;
+  const handle = await open(devicePath, flags);
+  try {
+    const status = {};
+    for (const [name, request] of LINUX_STATUS_REQUESTS) {
+      status[name] = await readEscposRealtimeStatusByte(handle, request, timeoutMs);
+    }
+    return status;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readEscposRealtimeStatusByte(handle, request, timeoutMs) {
+  const startedAt = Date.now();
+  const readBuffer = Buffer.alloc(1);
+  await handle.write(Buffer.from([0x10, 0x04, request]), 0, 3);
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const result = await handle.read(readBuffer, 0, 1, null);
+      if (result.bytesRead === 1) return readBuffer[0];
+    } catch (error) {
+      if (!['EAGAIN', 'EWOULDBLOCK'].includes(error.code)) throw error;
+    }
+    await sleep(20);
+  }
+
+  throw new Error(`ESC/POS status response timed out for DLE EOT ${request}`);
+}
+
+function describeEscposRealtimeStatus(status) {
+  const problems = [];
+  const printer = Number(status.printer ?? 0);
+  const offline = Number(status.offline ?? 0);
+  const error = Number(status.error ?? 0);
+  const paper = Number(status.paper ?? 0);
+
+  if ((printer & 0x08) !== 0 || (offline & 0x08) !== 0) problems.push('オフライン');
+  if ((offline & 0x04) !== 0) problems.push('カバーオープン');
+  if ((offline & 0x20) !== 0) problems.push('用紙切れ');
+  if ((offline & 0x40) !== 0) problems.push('エラー');
+  if ((error & 0x08) !== 0) problems.push('紙詰まり');
+  if ((error & 0x20) !== 0) problems.push('サービス要求');
+  if ((paper & 0x0c) !== 0) problems.push('レシート用紙残量少');
+  if ((paper & 0x60) !== 0) problems.push('用紙切れ');
+
+  return Array.from(new Set(problems));
+}
+
+function resolveLinuxPrinterDevice(options = {}) {
+  return options.linuxPrinterDevice || '/dev/usb/lp0';
 }
 
 async function checkPrintBridgeProblems(printerName, options) {

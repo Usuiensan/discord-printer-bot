@@ -7,9 +7,11 @@
   "scripts": {
     "start": "node src/index.js",
     "bridge": "node src/printBridge.js",
-    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js && node --check src/printBridge.js",
+    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js && node --check src/receiptLineContent.js && node --check src/printBridge.js && node --check tools/linux-printer-status.js && node --check tools/linux-rawprint.js",
     "discord:diagnose": "node tools/diagnose-discord.js",
     "discord:delete-commands": "node tools/delete-discord-commands.js",
+    "linux:status": "node tools/linux-printer-status.js",
+    "linux:rawprint": "node tools/linux-rawprint.js",
     "start:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/start-bot-hidden.ps1",
     "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/stop-bot.ps1",
     "startup:install": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-startup-task.ps1",

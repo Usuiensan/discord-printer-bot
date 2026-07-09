@@ -50,13 +50,21 @@ const urlQrMode = process.env.URL_QR_MODE?.trim()
   ? enumEnv('URL_QR_MODE', 'manual', ['manual', 'auto'])
   : (boolEnv('PRINT_URL_QR', false) ? 'auto' : 'manual');
 
+const printerBackend = process.env.PRINTER_BACKEND?.trim()
+  ? enumEnv('PRINTER_BACKEND', 'windows', ['windows', 'bridge', 'linux-usb'])
+  : (optionalEnv('PRINT_BRIDGE_URL', '') ? 'bridge' : 'windows');
+
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
   channelId: requireEnv('DISCORD_CHANNEL_ID'),
-  printerName: requireEnv('PRINTER_NAME'),
+  printerName: printerBackend === 'linux-usb' ? optionalEnv('PRINTER_NAME', '') : requireEnv('PRINTER_NAME'),
+  printerBackend,
   printBridgeUrl: optionalEnv('PRINT_BRIDGE_URL', ''),
   printBridgeToken: optionalEnv('PRINT_BRIDGE_TOKEN', ''),
+  linuxPrinterDevice: optionalEnv('LINUX_PRINTER_DEVICE', '/dev/usb/lp0'),
+  linuxStatusEnabled: boolEnv('LINUX_STATUS_ENABLED', true),
+  linuxStatusTimeoutMs: intEnv('LINUX_STATUS_TIMEOUT_MS', 1000),
   printRetryAttempts: intEnv('PRINT_RETRY_ATTEMPTS', 8),
   printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
   printerMonitorEnabled: boolEnv('PRINTER_MONITOR_ENABLED', true),
