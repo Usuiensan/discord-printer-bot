@@ -242,6 +242,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 
 ページモードは機種・ドライバー・現在の状態により無視される命令があります。通常のレシート印字では `!left`、`!center`、`!right`、`!bold`、`!size`、`!cut` から使うのがおすすめです。
 
+## ReceiptLine 記法
+
+`!receiptline` または `!rl` で ReceiptLine 文書として本文を解釈します。`!preview` と組み合わせると同じ内容を PNG プレビューにします。
+
+実装済み:
+
+- 列区切り `|`
+- `{width:...}` / `{w:...}`
+- `{border:space|none|line|2}` / `{b:...}`
+- `{align:left|center|right}` / `{a:...}`
+- `{text:wrap|nowrap}` / `{t:...}`
+- 水平線 `---`
+- カット `===`
+- 下線 `_`、強調 `"`、白黒反転 `` ` ``、倍角 `^`
+- `{code:...; option:...}` の QR/主要バーコード
+- `{image:...}` の PNG base64 画像
+
+未知のプロパティ、コメント、ReceiptLine の `{command:...}` は安全のため無視します。デバイス固有コマンドが必要な場合は、既存の raw ESC/POS 許可ユーザー機能を使ってください。
+
 ## raw ESC/POS 権限
 
 raw ESC/POS は16進数のバイト列をそのままプリンタへ送ります。通常のDiscordヘッダー、通し番号、カットは追加しません。

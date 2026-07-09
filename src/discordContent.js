@@ -1,6 +1,7 @@
 import emojiRegex from 'emoji-regex';
 import sharp from 'sharp';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
+import { appendReceiptLine, extractReceiptLineMessage, renderReceiptLinePreview } from './receiptLineContent.js';
 import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLines } from './symbolContent.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
@@ -19,6 +20,16 @@ export async function buildPrintJob(message, config, options = {}) {
     printNumber: options.printNumber,
     warnings
   });
+
+  const receiptLineDocument = extractReceiptLineMessage(message.content ?? '', config.messageCommandPrefix);
+  if (receiptLineDocument != null) {
+    await appendReceiptLine(printer, receiptLineDocument, config, warnings);
+    printer.cut(config.cutMode);
+    return {
+      bytes: printer.build(),
+      warnings,
+    };
+  }
 
   const symbolExtraction = extractSymbolMessageCommands(message.content ?? '', config.messageCommandPrefix);
   const contentMessage = symbolExtraction.commands.length > 0
@@ -136,6 +147,11 @@ export async function buildPreviewText(message, config) {
 
 async function buildPreviewRows(message, config) {
   const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
+  const receiptLineDocument = extractReceiptLineMessage(content, config.messageCommandPrefix);
+  if (receiptLineDocument != null) {
+    return renderReceiptLinePreview(receiptLineDocument, config);
+  }
+
   const symbolExtraction = extractSymbolMessageCommands(content, config.messageCommandPrefix);
   const contentMessage = symbolExtraction.commands.length > 0
     ? { ...message, content: symbolExtraction.text }
