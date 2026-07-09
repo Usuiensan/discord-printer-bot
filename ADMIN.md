@@ -256,6 +256,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 ## ReceiptLine 記法
 
 `!receiptline` または `!rl` で ReceiptLine 文書として本文を解釈します。`!preview` と組み合わせると同じ内容を PNG プレビューにします。
+対応記法の詳細は [RECEIPTLINE.md](RECEIPTLINE.md) を参照してください。
 
 実装済み:
 

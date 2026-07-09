@@ -1132,7 +1132,7 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function parseDiscordStyleTokens(line) {
+export function parseDiscordStyleTokens(line) {
   if (/^\*+$/.test(line)) {
     return [{ text: line, bold: false, underline: false }];
   }
@@ -1150,16 +1150,20 @@ function parseDiscordStyleTokens(line) {
 
   while (index < line.length) {
     if (line.startsWith('**', index)) {
-      flush();
-      state.bold = !state.bold;
-      index += 2;
-      continue;
+      if (state.bold || hasClosingStyleMarker(line, '**', index + 2)) {
+        flush();
+        state.bold = !state.bold;
+        index += 2;
+        continue;
+      }
     }
     if (line.startsWith('__', index)) {
-      flush();
-      state.underline = !state.underline;
-      index += 2;
-      continue;
+      if (state.underline || hasClosingStyleMarker(line, '__', index + 2)) {
+        flush();
+        state.underline = !state.underline;
+        index += 2;
+        continue;
+      }
     }
     plain += line[index];
     index += 1;
@@ -1167,6 +1171,10 @@ function parseDiscordStyleTokens(line) {
 
   flush();
   return tokens.length > 0 ? tokens : [{ text: line, bold: false, underline: false }];
+}
+
+function hasClosingStyleMarker(line, marker, startIndex) {
+  return line.indexOf(marker, startIndex) !== -1;
 }
 
 async function printImageItems(printer, imageItems, config, warnings, options = {}) {

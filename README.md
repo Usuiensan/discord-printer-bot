@@ -50,6 +50,7 @@ PRINT_FONT_FAMILY=VL Gothic
 ## ReceiptLine
 
 ReceiptLine 記法でレシートを記述したい場合は、投稿の先頭に `!receiptline` または `!rl` を付けます。`!preview` と組み合わせると印刷前にプレビューできます。
+対応記法の詳細は [RECEIPTLINE.md](RECEIPTLINE.md) を参照してください。
 
 ````text
 !preview
