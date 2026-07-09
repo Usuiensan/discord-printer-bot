@@ -3,7 +3,7 @@
 指定チャンネルに投稿すると、Epson TM-T70II 58mm レシートプリンタへ印刷されます。
 
 管理者向けのセットアップ、起動、権限設定は [ADMIN.md](ADMIN.md) を参照してください。
-Proxmox 上で Debian 13 standard に bot、Windows VM に OPOS/印刷だけを分離する構成は [PROXMOX.md](PROXMOX.md) を参照してください。
+Proxmox 上の Debian 13 standard CT だけで bot と USB プリンタ印刷を動かす構成は [PROXMOX.md](PROXMOX.md) を参照してください。
 
 ## 基本
 
