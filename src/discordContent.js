@@ -1297,7 +1297,6 @@ function printTextHeader(printer, message, warnings, printNumber) {
   printTextLine(printer, time.time, warnings);
   const numberText = formatPrintNumber(printNumber);
   if (numberText) printTextLine(printer, numberText, warnings);
-  printTextLine(printer, '-'.repeat(32), warnings);
 }
 
 async function buildAuthorHeaderImage(message, config, printNumber) {
@@ -1338,7 +1337,6 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
   <text class="meta" x="${textX}" y="${padding + 56}">${dateText}</text>
   <text class="meta" x="${textX}" y="${padding + 80}">${timeText}</text>
   <text class="number" x="${textX}" y="${padding + 110}">${numberText}</text>
-  <line x1="${textX}" y1="${height - 8}" x2="${textX + textWidth}" y2="${height - 8}" stroke="black" stroke-width="2"/>
 </svg>`);
 
   const composites = [{ input: svg, left: 0, top: 0 }];

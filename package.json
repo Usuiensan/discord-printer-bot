@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js",
+    "bridge": "node src/printBridge.js",
+    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js && node --check src/printBridge.js",
     "discord:diagnose": "node tools/diagnose-discord.js",
     "discord:delete-commands": "node tools/delete-discord-commands.js",
     "start:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/start-bot-hidden.ps1",

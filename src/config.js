@@ -55,6 +55,8 @@ export const config = {
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
   channelId: requireEnv('DISCORD_CHANNEL_ID'),
   printerName: requireEnv('PRINTER_NAME'),
+  printBridgeUrl: optionalEnv('PRINT_BRIDGE_URL', ''),
+  printBridgeToken: optionalEnv('PRINT_BRIDGE_TOKEN', ''),
   printRetryAttempts: intEnv('PRINT_RETRY_ATTEMPTS', 8),
   printRetryDelayMs: intEnv('PRINT_RETRY_DELAY_MS', 1500),
   printerMonitorEnabled: boolEnv('PRINTER_MONITOR_ENABLED', true),

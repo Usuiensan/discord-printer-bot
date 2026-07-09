@@ -34,6 +34,15 @@ const WARNING_ONLY_PRINTER_PROBLEMS = new Set([
 ]);
 
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
+  if (options.printBridgeUrl) {
+    await sendRawToPrintBridge(bytes, printerName, options);
+    return;
+  }
+
+  await sendRawToLocalPrinter(bytes, printerName, options);
+}
+
+export async function sendRawToLocalPrinter(bytes, printerName, options = {}) {
   const dir = join(os.tmpdir(), 'discord-printer-bot');
   await mkdir(dir, { recursive: true });
   const filePath = join(dir, `${randomUUID()}.bin`);
@@ -70,6 +79,14 @@ export async function assertPrinterReady(printerName, options = {}) {
 }
 
 export async function checkPrinterProblems(printerName, options = {}) {
+  if (options.printBridgeUrl) {
+    return checkPrintBridgeProblems(printerName, options);
+  }
+
+  return checkLocalPrinterProblems(printerName, options);
+}
+
+export async function checkLocalPrinterProblems(printerName, options = {}) {
   if (options.oposStatusEnabled && options.oposLogicalName) {
     try {
       const oposStatus = await getOposStatus(options.oposLogicalName, options.oposClaimTimeoutMs);
@@ -94,6 +111,81 @@ export async function checkPrinterProblems(printerName, options = {}) {
   }
 
   return describePrinterProblems(status);
+}
+
+async function sendRawToPrintBridge(bytes, printerName, options) {
+  const response = await fetch(printBridgeUrl(options, '/print'), {
+    method: 'POST',
+    headers: printBridgeHeaders(options, {
+      'content-type': 'application/json'
+    }),
+    body: JSON.stringify({
+      printerName,
+      data: Buffer.from(bytes).toString('base64'),
+      options: remotePrintOptions(options)
+    })
+  });
+
+  const body = await readJsonResponse(response);
+  if (!response.ok) {
+    throw printBridgeError(response, body);
+  }
+}
+
+async function checkPrintBridgeProblems(printerName, options) {
+  const url = printBridgeUrl(options, '/status');
+  url.searchParams.set('printerName', printerName);
+  const response = await fetch(url, {
+    headers: printBridgeHeaders(options)
+  });
+  const body = await readJsonResponse(response);
+
+  if (!response.ok) {
+    throw printBridgeError(response, body);
+  }
+
+  return Array.isArray(body.problems) ? body.problems : [];
+}
+
+function printBridgeUrl(options, path) {
+  return new URL(path, ensureTrailingSlash(options.printBridgeUrl));
+}
+
+function ensureTrailingSlash(value) {
+  return String(value).endsWith('/') ? String(value) : `${value}/`;
+}
+
+function printBridgeHeaders(options, headers = {}) {
+  const token = options.printBridgeToken;
+  return token ? { ...headers, authorization: `Bearer ${token}` } : headers;
+}
+
+function remotePrintOptions(options) {
+  return {
+    printRetryAttempts: options.printRetryAttempts,
+    printRetryDelayMs: options.printRetryDelayMs,
+    oposStatusEnabled: options.oposStatusEnabled,
+    oposLogicalName: options.oposLogicalName,
+    oposClaimTimeoutMs: options.oposClaimTimeoutMs
+  };
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+}
+
+function printBridgeError(response, body) {
+  const message = body?.error || body?.message || `print bridge returned HTTP ${response.status}`;
+  const error = new Error(message);
+  if (Array.isArray(body?.printerProblems)) error.printerProblems = body.printerProblems;
+  if (typeof body?.retryable === 'boolean') error.retryable = body.retryable;
+  return error;
 }
 
 async function retryPrintOperation(operation, options) {
