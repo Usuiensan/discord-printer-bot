@@ -80,6 +80,8 @@ export const config = {
   mergeSameUserWindowMs: intEnv('MERGE_SAME_USER_WINDOW_MS', 3000),
   printAuthorAvatar: boolEnv('PRINT_AUTHOR_AVATAR', true),
   authorAvatarWidthDots: intEnv('AUTHOR_AVATAR_WIDTH_DOTS', 96),
+  printFontPath: optionalEnv('PRINT_FONT_PATH', ''),
+  printFontFamily: optionalEnv('PRINT_FONT_FAMILY', 'HeaderFont'),
   imageDitherMode: optionalEnv('IMAGE_DITHER_MODE', 'ordered'),
   imageMaxBytes: intEnv('IMAGE_MAX_BYTES', 32 * 1024 * 1024),
   textAttachmentMaxBytes: intEnv('TEXT_ATTACHMENT_MAX_BYTES', 256 * 1024),

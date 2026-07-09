@@ -1,5 +1,6 @@
 import emojiRegex from 'emoji-regex';
 import sharp from 'sharp';
+import { existsSync, readFileSync } from 'node:fs';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
 import { appendReceiptLine, extractReceiptLineMessage, renderReceiptLinePreview } from './receiptLineContent.js';
 import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLines } from './symbolContent.js';
@@ -188,36 +189,34 @@ async function buildPreviewRows(message, config) {
 export async function buildPreviewImage(message, config) {
   const lines = await buildPreviewRows(message, config);
   const padding = 16;
-  const baseFontSize = 18;
   const baseLineHeight = 24;
   const width = config.printWidthDots ?? 384;
   const measuredLines = lines.map((line) => {
-    const fontSize = previewFontSize(line, baseFontSize);
     return {
       ...line,
-      fontSize,
-      lineHeight: Math.ceil(baseLineHeight * Math.max(1, line.sizeY ?? 1) * (line.small ? 0.75 : 1))
+      fontSize: previewFontSize(line),
+      lineHeight: Math.ceil(baseLineHeight * Math.max(1, line.sizeY ?? 1))
     };
   });
   const height = Math.max(80, padding * 2 + measuredLines.reduce((sum, line) => sum + line.lineHeight, 0));
-  const fontFace = systemFontFaceCss();
+  const font = resolveSvgFont(config);
   let y = padding;
-  const tspans = measuredLines.map((line) => {
+  const tspans = measuredLines.flatMap((line) => {
     y += line.lineHeight;
-    const anchor = line.align === 'center' ? 'middle' : line.align === 'right' ? 'end' : 'start';
-    const x = line.align === 'center' ? Math.round(width / 2) : line.align === 'right' ? width - padding : padding;
-    const weight = line.bold ? '700' : '400';
-    const decoration = line.underline ? ' text-decoration=\"underline\"' : '';
     const baselineY = y - Math.max(4, Math.round(line.lineHeight * 0.25));
-    const scaleX = Math.max(1, line.sizeX ?? 1);
-    return `<text x="0" y="0" transform="translate(${x} ${baselineY}) scale(${scaleX} 1)" text-anchor="${anchor}" font-size="${line.fontSize}" font-weight="${weight}"${decoration} xml:space="preserve">${escapeXml(line.text)}</text>`;
+    return layoutPreviewTextElements(line, {
+      width,
+      padding,
+      y: baselineY,
+      fontFamily: font.family
+    });
   }).join('\n');
 
   const svg = Buffer.from(`
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <style>
-    ${fontFace}
-    text { font-family: HeaderFont, "MS Gothic", monospace; fill: #000; }
+    ${font.css}
+    text { font-family: ${font.cssFamily}; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
   ${tspans}
@@ -663,9 +662,74 @@ function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
   };
 }
 
-function previewFontSize(line, baseFontSize) {
-  const smallScale = line.small ? 0.75 : 1;
-  return Math.max(8, Math.round(baseFontSize * Math.max(1, line.sizeY ?? 1) * smallScale));
+function previewFontSize(line) {
+  const baseFontSize = line.small ? 14 : 18;
+  return Math.max(8, Math.round(baseFontSize * Math.max(1, line.sizeY ?? 1)));
+}
+
+export function layoutPreviewTextRuns(line, { width = 384, padding = 16, y = 0 } = {}) {
+  const text = String(line.text ?? '');
+  const sizeX = Math.max(1, line.sizeX ?? 1);
+  const advance = previewTextAdvance(text, line, sizeX);
+  const contentWidth = Math.max(0, width - padding * 2);
+  let x = padding;
+  if (line.align === 'right') {
+    x = padding + Math.max(0, contentWidth - advance);
+  } else if (line.align === 'center') {
+    x = padding + Math.max(0, Math.round((contentWidth - advance) / 2));
+  }
+
+  const runs = [];
+  for (const char of Array.from(text)) {
+    const charAdvance = previewCharAdvance(char, line) * sizeX;
+    runs.push({
+      text: char,
+      x,
+      y,
+      width: charAdvance,
+      fontSize: previewFontSize(line),
+      bold: Boolean(line.bold),
+      underline: Boolean(line.underline)
+    });
+    x += charAdvance;
+  }
+  return runs;
+}
+
+function layoutPreviewTextElements(line, options) {
+  return layoutPreviewTextRuns(line, options).map((run) => {
+    const weight = run.bold ? '700' : '400';
+    const decoration = run.underline ? ' text-decoration="underline"' : '';
+    return `<text x="${run.x}" y="${run.y}" font-size="${run.fontSize}" font-weight="${weight}"${decoration} xml:space="preserve">${escapeXml(run.text)}</text>`;
+  });
+}
+
+function previewTextAdvance(text, line, sizeX) {
+  return Array.from(String(text ?? '')).reduce((sum, char) => sum + previewCharAdvance(char, line) * sizeX, 0);
+}
+
+function previewCharAdvance(char, line) {
+  const halfWidth = line.small ? ((line.printWidthDots ?? 384) / 42) : 12;
+  return isFullWidthPreviewChar(char) ? halfWidth * 2 : halfWidth;
+}
+
+function isFullWidthPreviewChar(char) {
+  const codePoint = char.codePointAt(0);
+  return (
+    codePoint >= 0x1100 &&
+    (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    )
+  );
 }
 
 function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
@@ -1328,7 +1392,7 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
   const time = formatMessageTimeParts(message.createdAt);
   const dateText = escapeXml(time.date);
   const timeText = escapeXml(time.time);
-  const fontFace = systemFontFaceCss();
+  const font = resolveSvgFont(config);
 
   let avatar = null;
   if (config.printAuthorAvatar) {
@@ -1343,10 +1407,10 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
   const svg = Buffer.from(`
 <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <style>
-    ${fontFace}
-    .name { font-family: HeaderFont, Arial, sans-serif; font-size: 32px; font-weight: 700; fill: #000; }
-    .meta { font-family: HeaderFont, Arial, sans-serif; font-size: 24px; fill: #000; }
-    .number { font-family: HeaderFont, Arial, sans-serif; font-size: 36px; font-weight: 700; fill: #000; }
+    ${font.css}
+    .name { font-family: ${font.cssFamily}; font-size: 32px; font-weight: 700; fill: #000; }
+    .meta { font-family: ${font.cssFamily}; font-size: 24px; fill: #000; }
+    .number { font-family: ${font.cssFamily}; font-size: 36px; font-weight: 700; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
   <text class="name" x="${textX}" y="${padding + 30}">${name}</text>
@@ -1373,9 +1437,42 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
     .toBuffer();
 }
 
-function systemFontFaceCss() {
-  const fontPath = 'C:/Windows/Fonts/msgothic.ttc';
-  return `@font-face { font-family: HeaderFont; src: url("file:///${fontPath}"); }`;
+function resolveSvgFont(config = {}) {
+  const configuredFamily = config.printFontFamily || process.env.PRINT_FONT_FAMILY || 'HeaderFont';
+  const requestedPath = config.printFontPath || process.env.PRINT_FONT_PATH || '';
+  const candidates = [
+    { path: requestedPath, family: configuredFamily },
+    { path: '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf', family: 'IPA Gothic' },
+    { path: '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf', family: 'IPA Gothic' },
+    { path: '/usr/share/fonts/truetype/unifont/unifont.ttf', family: 'Unifont' },
+    { path: 'C:/Windows/Fonts/msgothic.ttc', family: 'IPA Gothic' }
+  ].filter((candidate) => candidate.path);
+
+  const selected = candidates.find((candidate) => existsSync(candidate.path));
+  const family = selected?.family || configuredFamily || 'HeaderFont';
+  const fallbackFamily = selected
+    ? `${quoteCssFontFamily(family)}, "IPA Gothic", "Unifont", sans-serif`
+    : `"IPA Gothic", "Unifont", sans-serif`;
+
+  if (!selected) {
+    return { css: '', family, cssFamily: fallbackFamily };
+  }
+
+  const extension = selected.path.toLowerCase().endsWith('.otf') ? 'opentype' : 'truetype';
+  const data = readFileSync(selected.path).toString('base64');
+  return {
+    css: `@font-face { font-family: ${quoteCssFontFamily(family)}; src: url("data:font/${extension};base64,${data}") format("${extension}"); }`,
+    family,
+    cssFamily: fallbackFamily
+  };
+}
+
+export function systemFontFaceCss(config = {}) {
+  return resolveSvgFont(config).css;
+}
+
+function quoteCssFontFamily(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 function displayName(message) {

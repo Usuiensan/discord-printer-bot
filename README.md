@@ -5,6 +5,13 @@
 管理者向けのセットアップ、起動、権限設定は [ADMIN.md](ADMIN.md) を参照してください。
 Proxmox 上の Debian 13 standard CT だけで bot と USB プリンタ印刷を動かす構成は [PROXMOX.md](PROXMOX.md) を参照してください。
 
+Linux 環境ではヘッダー画像と `!preview` の日本語表示用に VL Gothic を推奨します。管理者は Debian 側で `fonts-vlgothic` を入れ、`.env` に以下を設定してください。
+
+```env
+PRINT_FONT_PATH=/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf
+PRINT_FONT_FAMILY=VL Gothic
+```
+
 ## 基本
 
 普通にメッセージを投稿すると、その本文が印刷されます。
