@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { layoutPreviewTextRuns } from '../src/discordContent.js';
+import { displayColumns, layoutPreviewTextRuns } from '../src/discordContent.js';
 
 test('preview layout advances half-width, full-width, and symbols by printer columns', () => {
   const runs = layoutPreviewTextRuns({
@@ -78,4 +78,27 @@ test('preview layout can place receipt row left and right segments without space
   assert.equal(rightRuns[0].x, 312);
   assert.equal(rightRuns.at(-1).x + rightRuns.at(-1).width, 384);
   assert.ok(rightRuns.every((run) => run.bold));
+});
+
+test('half-width katakana and half-width voiced marks occupy one half-width column each', () => {
+  assert.equal(displayColumns('ABC'), 3);
+  assert.equal(displayColumns('ｳｽｲｴﾝｻﾝ'), 7);
+  assert.equal(displayColumns('ｶﾞﾊﾟ'), 4);
+  assert.equal(displayColumns('ガパ'), 4);
+
+  const runs = layoutPreviewTextRuns({
+    text: 'ｶﾞﾊﾟA',
+    align: 'left',
+    small: false,
+    sizeX: 1,
+    sizeY: 1
+  }, {
+    width: 384,
+    padding: 0,
+    y: 24
+  });
+
+  assert.deepEqual(runs.map((run) => run.text), ['ｶ', 'ﾞ', 'ﾊ', 'ﾟ', 'A']);
+  assert.deepEqual(runs.map((run) => run.x), [0, 12, 24, 36, 48]);
+  assert.deepEqual(runs.map((run) => run.width), [12, 12, 12, 12, 12]);
 });

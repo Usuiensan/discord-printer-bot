@@ -721,7 +721,7 @@ function previewTextAdvance(text, line, sizeX) {
 
 function previewCharAdvance(char, line) {
   const halfWidth = line.small ? ((line.printWidthDots ?? 384) / 42) : 12;
-  return isFullWidthPreviewChar(char) ? halfWidth * 2 : halfWidth;
+  return charWidth(char) === 2 ? halfWidth * 2 : halfWidth;
 }
 
 function isFullWidthPreviewChar(char) {
@@ -855,7 +855,7 @@ function renderReceiptLayoutCommand(command, layoutState) {
   return [];
 }
 
-function formatReceiptRow(left, right, columns) {
+export function formatReceiptRow(left, right, columns) {
   const rightWidth = displayColumns(stripDiscordStyleMarkers(right));
   if (!right) return wrapText(left, columns);
   if (rightWidth >= columns - 1) {
@@ -1988,10 +1988,14 @@ function textWrapUnits(line) {
   return units;
 }
 
-function displayColumns(text) {
+export function displayColumns(text) {
   return Array.from(text).reduce((columns, char) => columns + charWidth(char), 0);
 }
 
-function charWidth(char) {
-  return char.charCodeAt(0) <= 0x7f ? 1 : 2;
+export function charWidth(char) {
+  const codePoint = char.codePointAt(0);
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint === 0x00a5) return 1;
+  if (codePoint >= 0xff61 && codePoint <= 0xff9f) return 1;
+  return 2;
 }

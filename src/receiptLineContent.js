@@ -551,7 +551,11 @@ function displayColumns(text) {
 }
 
 function charWidth(char) {
-  return char.charCodeAt(0) <= 0x7f ? 1 : 2;
+  const codePoint = char.codePointAt(0);
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint === 0x00a5) return 1;
+  if (codePoint >= 0xff61 && codePoint <= 0xff9f) return 1;
+  return 2;
 }
 
 function normalizeToken(value) {
