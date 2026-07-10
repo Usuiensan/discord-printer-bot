@@ -56,3 +56,26 @@ test('preview layout uses Font B 42-column half-width advances for small text', 
   assert.deepEqual(runs.map((run) => run.x), [0, half, half * 2, half * 3]);
   assert.deepEqual(runs.map((run) => run.width), [half, half, half, half * 2]);
 });
+
+test('preview layout can place receipt row left and right segments without space padding overflow', () => {
+  const runs = layoutPreviewTextRuns({
+    text: '',
+    align: 'left',
+    small: false,
+    sizeX: 1,
+    sizeY: 1,
+    segments: [
+      { text: '合計', align: 'left' },
+      { text: '¥2,150', align: 'right', bold: true }
+    ]
+  }, {
+    width: 384,
+    padding: 0,
+    y: 24
+  });
+
+  const rightRuns = runs.slice(2);
+  assert.equal(rightRuns[0].x, 312);
+  assert.equal(rightRuns.at(-1).x + rightRuns.at(-1).width, 384);
+  assert.ok(rightRuns.every((run) => run.bold));
+});

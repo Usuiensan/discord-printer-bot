@@ -659,6 +659,7 @@ function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
     small: overrides.small ?? layoutState.small ?? false,
     sizeX: overrides.sizeX ?? layoutState.sizeX ?? 1,
     sizeY: overrides.sizeY ?? layoutState.sizeY ?? 1,
+    segments: overrides.segments,
   };
 }
 
@@ -668,6 +669,16 @@ function previewFontSize(line) {
 }
 
 export function layoutPreviewTextRuns(line, { width = 384, padding = 16, y = 0 } = {}) {
+  if (Array.isArray(line.segments)) {
+    return line.segments.flatMap((segment) => layoutPreviewTextRuns({
+      ...line,
+      ...segment,
+      align: segment.align ?? line.align,
+      text: segment.text,
+      segments: undefined
+    }, { width, padding, y }));
+  }
+
   const text = String(line.text ?? '');
   const sizeX = Math.max(1, line.sizeX ?? 1);
   const advance = previewTextAdvance(text, line, sizeX);
@@ -785,6 +796,13 @@ function applyPreviewReceiptCommand(lines, line, layoutState) {
     const command = parseReceiptLayoutCommand(line);
     if (!command) return { applied: false };
 
+    if (command.name === 'row') {
+      for (const outputLine of renderPreviewReceiptRow(command.body, layoutState)) {
+        lines.push(outputLine);
+      }
+      return { applied: true };
+    }
+
     for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
       lines.push(previewLine(previewPrintableText(outputLine), layoutState));
     }
@@ -849,6 +867,41 @@ function formatReceiptRow(left, right, columns) {
   const lastLeft = leftLines.pop() ?? '';
   const spaces = Math.max(1, columns - displayColumns(lastLeft) - rightWidth);
   return [...leftLines, `${lastLeft}${' '.repeat(spaces)}${right}`];
+}
+
+function renderPreviewReceiptRow(body, layoutState) {
+  const separator = body.indexOf('|');
+  if (separator < 0) throw new Error('row needs "|" separator');
+
+  const left = body.slice(0, separator).trim();
+  const right = body.slice(separator + 1).trim();
+  const columns = currentLayoutColumns(layoutState);
+  const rightWidth = displayColumns(stripDiscordStyleMarkers(right));
+  if (!right || rightWidth >= columns - 1) {
+    return formatReceiptRow(left, right, columns).map((line) => previewLine(previewPrintableText(line), layoutState));
+  }
+
+  const leftColumns = Math.max(1, columns - rightWidth - 1);
+  const leftLines = wrapText(left, leftColumns);
+  const rows = leftLines.slice(0, -1).map((line) => previewLine(previewPrintableText(line), layoutState));
+  const lastLeft = leftLines.at(-1) ?? '';
+  rows.push(previewLine('', layoutState, {
+    segments: [
+      {
+        text: previewPrintableText(lastLeft),
+        align: 'left',
+        bold: layoutState.bold,
+        underline: layoutState.underline
+      },
+      {
+        text: previewPrintableText(right),
+        align: 'right',
+        bold: layoutState.bold || hasWholeBoldMarker(right),
+        underline: layoutState.underline || hasWholeUnderlineMarker(right)
+      }
+    ]
+  }));
+  return rows;
 }
 
 function currentLayoutColumns(layoutState) {
@@ -972,6 +1025,14 @@ function stripDiscordStyleMarkers(text) {
   return String(text)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1');
+}
+
+function hasWholeBoldMarker(text) {
+  return /^\*\*[\s\S]+\*\*$/.test(String(text));
+}
+
+function hasWholeUnderlineMarker(text) {
+  return /^__[\s\S]+__$/.test(String(text));
 }
 
 function previewPrintableText(text) {
