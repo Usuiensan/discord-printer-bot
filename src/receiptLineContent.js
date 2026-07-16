@@ -1,4 +1,6 @@
 import { normalizePrinterTextDetailed } from './escpos.js';
+import sharp from 'sharp';
+import { existsSync, readFileSync } from 'node:fs';
 
 const DEFAULT_COLUMNS = 32;
 const PROPERTY_LINE_RE = /^\s*\{([\s\S]*)\}\s*$/;
@@ -40,8 +42,8 @@ export async function appendReceiptLine(printer, document, config = {}, warnings
 
   for (const rawLine of parseReceiptLinePhysicalLines(document)) {
     const result = await applyReceiptLineLine(rawLine, state, {
-      text: (line) => printer.line(line),
-      styledText: (line) => printStyledSegments(printer, line.segments),
+      text: (line) => printReceiptLineText(printer, line, config, warnings),
+      styledText: (line) => printReceiptLineStyledText(printer, line, config, warnings),
       image: async (base64) => {
         await printer.image(Buffer.from(base64, 'base64'), {
           maxWidth: state.printWidthDots,
@@ -122,26 +124,26 @@ async function applyReceiptLineLine(rawLine, state, output) {
     }
 
     if (HORIZONTAL_LINE_RE.test(rawLine)) {
-      output.text(renderHorizontalLine(state));
+      await output.text(renderHorizontalLine(state));
       return { applied: true };
     }
 
     if (CUT_LINE_RE.test(rawLine)) {
-      output.cut();
+      await output.cut();
       return { applied: true };
     }
 
     if (!rawLine.trim()) {
-      output.text('');
+      await output.text('');
       return { applied: true };
     }
 
     const columns = splitReceiptLineColumns(rawLine);
     for (const line of layoutReceiptLineColumns(columns, state)) {
       if (line.segments) {
-        output.styledText(line);
+        await output.styledText(line);
       } else {
-        output.text(line.text);
+        await output.text(line.text);
       }
     }
     return { applied: true };
@@ -342,6 +344,79 @@ function printStyledSegments(printer, segments) {
   printer.feed(1);
 }
 
+async function printReceiptLineStyledText(printer, line, config, warnings) {
+  const text = line.segments.map((segment) => stripStyleMarkers(segment.text)).join('');
+  if (shouldRasterReceiptLineText(text, config)) {
+    await printReceiptLineRaster(printer, text, config, warnings);
+  } else {
+    printStyledSegments(printer, line.segments);
+  }
+}
+
+async function printReceiptLineText(printer, text, config, warnings) {
+  if (shouldRasterReceiptLineText(text, config)) {
+    await printReceiptLineRaster(printer, text, config, warnings);
+  } else {
+    printer.line(text);
+  }
+}
+
+function shouldRasterReceiptLineText(text, config) {
+  const mode = config.textRenderMode || process.env.TEXT_RENDER_MODE || 'auto';
+  if (mode === 'image') return Boolean(text);
+  if (mode === 'text') return false;
+  return normalizePrinterTextDetailed(text).replacements.length > 0;
+}
+
+async function printReceiptLineRaster(printer, text, config, warnings) {
+  if (!text) {
+    printer.feed(1);
+    return;
+  }
+  const width = config.printWidthDots ?? printer.widthDots ?? 384;
+  const font = resolveReceiptLineFont(config);
+  let x = 0;
+  const elements = Array.from(text).map((char) => {
+    const element = `<text x="${x}" y="20" font-size="18" xml:space="preserve">${escapeXml(char)}</text>`;
+    x += charWidth(char) * 12;
+    return element;
+  }).join('');
+  const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="24"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
+  await printer.image(await sharp(svg).png().toBuffer(), {
+    maxWidth: width,
+    dither: config.imageDitherMode ?? 'ordered'
+  });
+  const chars = [...new Set(normalizePrinterTextDetailed(text).replacements.map((item) => item.from))];
+  if (chars.length > 0) {
+    const warning = `プリンタ文字コード外の文字を画像として印刷しました: ${chars.join(' ')}`;
+    if (!warnings.includes(warning)) warnings.push(warning);
+  }
+}
+
+function resolveReceiptLineFont(config) {
+  const family = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans CJK JP';
+  const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
+  const selected = [
+    { path: requestedPath, family },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
+    { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
+    { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }
+  ].filter((candidate) => candidate.path).find((candidate) => existsSync(candidate.path));
+  if (!selected) return { css: '', cssFamily: '"Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", sans-serif' };
+  const format = selected.path.toLowerCase().endsWith('.otf') ? 'opentype' : 'truetype';
+  const data = readFileSync(selected.path).toString('base64');
+  const cssFamily = `"${selected.family.replace(/"/g, '\\"')}"`;
+  return {
+    css: `@font-face { font-family: ${cssFamily}; src: url("data:font/${format};base64,${data}") format("${format}"); }`,
+    cssFamily: `${cssFamily}, "Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", sans-serif`
+  };
+}
+
+function escapeXml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
 function stripStyleMarkers(text) {
   return String(text).replace(/[_"`^]/g, '');
 }
@@ -536,7 +611,7 @@ function findUnescaped(value, needle) {
 
 function previewRow(text) {
   return {
-    text: normalizePrinterTextDetailed(stripStyleMarkers(text)).text,
+    text: stripStyleMarkers(text),
     align: 'left',
     bold: false,
     underline: false,
@@ -554,6 +629,7 @@ function charWidth(char) {
   const codePoint = char.codePointAt(0);
   if (codePoint <= 0x7f) return 1;
   if (codePoint === 0x00a5) return 1;
+  if (codePoint >= 0x00c0 && codePoint <= 0x024f) return 1;
   if (codePoint >= 0xff61 && codePoint <= 0xff9f) return 1;
   return 2;
 }
