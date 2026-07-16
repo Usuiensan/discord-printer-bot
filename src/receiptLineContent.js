@@ -377,7 +377,7 @@ async function printReceiptLineRaster(printer, text, config, warnings) {
   const font = resolveReceiptLineFont(config);
   let x = 0;
   const elements = Array.from(text).map((char) => {
-    const element = `<text x="${x}" y="20" font-size="18" xml:space="preserve">${escapeXml(char)}</text>`;
+    const element = `<text x="${x}" y="23" font-size="24" xml:space="preserve">${escapeXml(char)}</text>`;
     x += charWidth(char) * 12;
     return element;
   }).join('');

@@ -673,7 +673,9 @@ function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
 }
 
 function previewFontSize(line) {
-  const baseFontSize = line.small ? 14 : 18;
+  // Native TM-T70II Font A is 24 dots high. Raster fallback must use the
+  // same physical size as native Japanese text, not the smaller preview font.
+  const baseFontSize = line.raster ? 24 : (line.small ? 14 : 18);
   return Math.max(8, Math.round(baseFontSize * Math.max(1, line.sizeY ?? 1)));
 }
 
@@ -1276,9 +1278,10 @@ export function shouldRenderTextAsImage(text, config = {}) {
 async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text) {
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
   const lineHeight = Math.ceil(24 * Math.max(1, line.sizeY ?? 1));
+  const rasterLine = { ...line, raster: true };
   const font = resolveTextImageFont(config);
   const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.2));
-  const elements = layoutPreviewTextElements(line, {
+  const elements = layoutPreviewTextElements(rasterLine, {
     width,
     padding: 0,
     y: baselineY,
