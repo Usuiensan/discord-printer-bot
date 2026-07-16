@@ -240,9 +240,11 @@ async function markPrintWarning(message, warnings) {
 
   const warningText = warnings.slice(0, 5).map((warning) => `- ${warning}`).join('\n');
   const more = warnings.length > 5 ? `\n...ほか ${warnings.length - 5} 件` : '';
-  const intro = warnings.every((warning) => warning.includes('を「') && warning.includes('に置換しました'))
-    ? '印刷は完了しましたが、文字を置換しました。'
-    : '印刷は完了しましたが、一部の内容を印刷できませんでした。';
+  const intro = warnings.every((warning) => warning.startsWith('プリンタ文字コード外の文字を画像として印刷しました:'))
+    ? '印刷は完了しました。プリンタ文字コード外の文字は画像として印刷しました。'
+    : warnings.every((warning) => warning.includes('を「') && warning.includes('に置換しました'))
+      ? '印刷は完了しましたが、文字を置換しました。'
+      : '印刷は完了しましたが、一部の内容を印刷できませんでした。';
   await replyToMessage(message, `${intro}\n${warningText}${more}`);
 }
 

@@ -12,6 +12,20 @@ PRINT_FONT_PATH=/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf
 PRINT_FONT_FAMILY=VL Gothic
 ```
 
+簡体字中国語や声調記号付きピンインなど、TM-T70II の CP932 文字印字で表せない文字は、既定ではその行だけ画像として印刷します。Debian CT では中国語と日本語を含むフォントも導入してください。
+
+```bash
+sudo apt install fonts-noto-cjk
+```
+
+```env
+TEXT_RENDER_MODE=auto
+TEXT_IMAGE_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+TEXT_IMAGE_FONT_FAMILY=Noto Sans CJK JP
+```
+
+`TEXT_RENDER_MODE=text` は従来どおり非対応文字を置換し、`image` は本文の全行を画像化します。`auto` ではバーコード、QRコード、カットなどはプリンタ内蔵コマンドのまま、非対応文字を含む通常行または `!row` 行だけを画像化します。
+
 ## 基本
 
 普通にメッセージを投稿すると、その本文が印刷されます。

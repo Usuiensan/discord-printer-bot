@@ -246,7 +246,7 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       continue;
     }
 
-    const receiptResult = applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState);
+    const receiptResult = await applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState, options);
     if (receiptResult.applied) continue;
     if (receiptResult.error) {
       printTextLine(printer, `[レシートコマンドエラー: ${receiptResult.error}]`, warnings);
@@ -287,7 +287,15 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       printer.smallText(true);
     }
     for (const line of wrapText(textToPrint, maxCols)) {
-      printStyledTextLine(printer, line, warnings);
+      await printStyledTextLineWithFallback(printer, line, warnings, {
+        ...options,
+        layoutState: {
+          ...layoutState,
+          small: layoutState.small || isSmall,
+          sizeX: Math.max(1, (layoutState.sizeX ?? 1) * size),
+          sizeY: Math.max(1, (layoutState.sizeY ?? 1) * size)
+        }
+      });
     }
     if (size > 1) {
       printer.size(1, 1);
@@ -660,6 +668,7 @@ function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
     sizeX: overrides.sizeX ?? layoutState.sizeX ?? 1,
     sizeY: overrides.sizeY ?? layoutState.sizeY ?? 1,
     segments: overrides.segments,
+    charStyles: overrides.charStyles,
   };
 }
 
@@ -693,14 +702,15 @@ export function layoutPreviewTextRuns(line, { width = 384, padding = 16, y = 0 }
   const runs = [];
   for (const char of Array.from(text)) {
     const charAdvance = previewCharAdvance(char, line) * sizeX;
+    const charStyle = line.charStyles?.[runs.length] ?? {};
     runs.push({
       text: char,
       x,
       y,
       width: charAdvance,
       fontSize: previewFontSize(line),
-      bold: Boolean(line.bold),
-      underline: Boolean(line.underline)
+      bold: Boolean(line.bold || charStyle.bold),
+      underline: Boolean(line.underline || charStyle.underline)
     });
     x += charAdvance;
   }
@@ -743,13 +753,13 @@ function isFullWidthPreviewChar(char) {
   );
 }
 
-function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
+async function applyReceiptLayoutCommand(printer, line, warnings, layoutState, options = {}) {
   try {
     const command = parseReceiptLayoutCommand(line);
     if (!command) return { applied: false };
 
     if (command.name === 'row') {
-      printReceiptRowCommand(printer, command.body, warnings, layoutState);
+      await printReceiptRowCommand(printer, command.body, warnings, layoutState, options);
       return { applied: true };
     }
 
@@ -762,7 +772,7 @@ function applyReceiptLayoutCommand(printer, line, warnings, layoutState) {
   }
 }
 
-function printReceiptRowCommand(printer, body, warnings, layoutState) {
+async function printReceiptRowCommand(printer, body, warnings, layoutState, options = {}) {
   const separator = body.indexOf('|');
   if (separator < 0) throw new Error('row needs "|" separator');
 
@@ -770,6 +780,13 @@ function printReceiptRowCommand(printer, body, warnings, layoutState) {
   const right = body.slice(separator + 1).trim();
   const rightColumns = displayColumns(stripDiscordStyleMarkers(right));
   const columns = currentLayoutColumns(layoutState);
+
+  if (shouldRenderTextAsImage(`${left}${right}`, options.config)) {
+    for (const row of renderPreviewReceiptRow(body, layoutState)) {
+      await printRasterTextLine(printer, row, warnings, options.config, `${left}${right}`);
+    }
+    return;
+  }
 
   if (!right || rightColumns >= columns - 1) {
     for (const outputLine of formatReceiptRow(left, right, columns)) {
@@ -1036,7 +1053,7 @@ function hasWholeUnderlineMarker(text) {
 }
 
 function previewPrintableText(text) {
-  return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).text;
+  return stripDiscordStyleMarkers(text);
 }
 
 function stripPreviewCommand(content, prefix) {
@@ -1232,6 +1249,58 @@ export function parseDiscordStyleTokens(line) {
 
   flush();
   return tokens.length > 0 ? tokens : [{ text: line, bold: false, underline: false }];
+}
+
+async function printStyledTextLineWithFallback(printer, line, warnings, options = {}) {
+  if (!shouldRenderTextAsImage(line, options.config)) {
+    printStyledTextLine(printer, line, warnings);
+    return;
+  }
+
+  const tokens = parseDiscordStyleTokens(line);
+  const text = tokens.map((token) => token.text).join('');
+  const charStyles = tokens.flatMap((token) => Array.from(token.text, () => ({
+    bold: token.bold,
+    underline: token.underline
+  })));
+  await printRasterTextLine(printer, previewLine(text, options.layoutState, { charStyles }), warnings, options.config, line);
+}
+
+export function shouldRenderTextAsImage(text, config = {}) {
+  const mode = config.textRenderMode || process.env.TEXT_RENDER_MODE || 'auto';
+  if (mode === 'image') return Boolean(stripDiscordStyleMarkers(text));
+  if (mode === 'text') return false;
+  return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.length > 0;
+}
+
+async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text) {
+  const width = config.printWidthDots ?? printer.widthDots ?? 384;
+  const lineHeight = Math.ceil(24 * Math.max(1, line.sizeY ?? 1));
+  const font = resolveTextImageFont(config);
+  const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.2));
+  const elements = layoutPreviewTextElements(line, {
+    width,
+    padding: 0,
+    y: baselineY,
+    fontFamily: font.family
+  });
+  const svg = Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}" viewBox="0 0 ${width} ${lineHeight}">
+  <style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style>
+  <rect width="100%" height="100%" fill="white"/>
+  ${elements}
+</svg>`);
+  const png = await sharp(svg).png().toBuffer();
+  await printer.image(png, { maxWidth: width, dither: config.imageDitherMode ?? 'ordered' });
+  printer.align(line.align ?? 'left');
+  recordImageRenderedChars(sourceText, warnings);
+}
+
+function recordImageRenderedChars(text, warnings) {
+  const chars = [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.map((item) => item.from))];
+  if (chars.length === 0) return;
+  const message = `プリンタ文字コード外の文字を画像として印刷しました: ${chars.join(' ')}`;
+  if (!warnings.includes(message)) warnings.push(message);
 }
 
 function hasClosingStyleMarker(line, marker, startIndex) {
@@ -1992,10 +2061,35 @@ export function displayColumns(text) {
   return Array.from(text).reduce((columns, char) => columns + charWidth(char), 0);
 }
 
+function resolveTextImageFont(config = {}) {
+  const configuredFamily = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans CJK JP';
+  const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
+  return resolveEmbeddedFont([
+    { path: requestedPath, family: configuredFamily },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
+    { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
+    { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }
+  ], configuredFamily, '"Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", "IPA Gothic", "Unifont", sans-serif');
+}
+
+function resolveEmbeddedFont(candidates, configuredFamily, fallbackCssFamily) {
+  const selected = candidates.filter((candidate) => candidate.path).find((candidate) => existsSync(candidate.path));
+  if (!selected) return { css: '', family: configuredFamily, cssFamily: fallbackCssFamily };
+  const extension = selected.path.toLowerCase().endsWith('.otf') ? 'opentype' : 'truetype';
+  const data = readFileSync(selected.path).toString('base64');
+  return {
+    css: `@font-face { font-family: ${quoteCssFontFamily(selected.family)}; src: url("data:font/${extension};base64,${data}") format("${extension}"); }`,
+    family: selected.family,
+    cssFamily: `${quoteCssFontFamily(selected.family)}, ${fallbackCssFamily}`
+  };
+}
+
 export function charWidth(char) {
   const codePoint = char.codePointAt(0);
   if (codePoint <= 0x7f) return 1;
   if (codePoint === 0x00a5) return 1;
+  if (codePoint >= 0x00c0 && codePoint <= 0x024f) return 1;
   if (codePoint >= 0xff61 && codePoint <= 0xff9f) return 1;
   return 2;
 }

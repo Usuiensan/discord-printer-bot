@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { displayColumns, layoutPreviewTextRuns } from '../src/discordContent.js';
+import { displayColumns, layoutPreviewTextRuns, shouldRenderTextAsImage } from '../src/discordContent.js';
 
 test('preview layout advances half-width, full-width, and symbols by printer columns', () => {
   const runs = layoutPreviewTextRuns({
@@ -101,4 +101,13 @@ test('half-width katakana and half-width voiced marks occupy one half-width colu
   assert.deepEqual(runs.map((run) => run.text), ['ｶ', 'ﾞ', 'ﾊ', 'ﾟ', 'A']);
   assert.deepEqual(runs.map((run) => run.x), [0, 12, 24, 36, 48]);
   assert.deepEqual(runs.map((run) => run.width), [12, 12, 12, 12, 12]);
+});
+
+test('pinyin tone letters occupy half-width columns and trigger automatic image printing', () => {
+  assert.equal(displayColumns('yǒu xiāngliào'), 13);
+  assert.equal(displayColumns('咸味：xiánwèi'), 13);
+  assert.equal(shouldRenderTextAsImage('有香料：yǒu xiāngliào', { textRenderMode: 'auto' }), true);
+  assert.equal(shouldRenderTextAsImage('日本語 ABC', { textRenderMode: 'auto' }), false);
+  assert.equal(shouldRenderTextAsImage('有香料', { textRenderMode: 'text' }), false);
+  assert.equal(shouldRenderTextAsImage('日本語', { textRenderMode: 'image' }), true);
 });
