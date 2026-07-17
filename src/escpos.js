@@ -280,6 +280,10 @@ export class EscPosBuilder {
     }
 
     this.feed(3);
+    return this.cutCommand(mode);
+  }
+
+  cutCommand(mode = 'partial') {
     if (mode === 'full') {
       this.raw(Buffer.from([GS, 0x56, 0x41, 0]));
     } else if (mode === 'partial3') {
@@ -456,7 +460,7 @@ export class EscPosBuilder {
     return this;
   }
 
-  async image(inputBuffer, { maxWidth = this.widthDots, dither = 'ordered' } = {}) {
+  async image(inputBuffer, { maxWidth = this.widthDots, dither = 'ordered', threshold = 170 } = {}) {
     const png = await sharp(inputBuffer, { animated: false })
       .rotate()
       .flatten({ background: '#ffffff' })
@@ -476,7 +480,7 @@ export class EscPosBuilder {
     for (let y = 0; y < info.height; y += 1) {
       for (let x = 0; x < info.width; x += 1) {
         const pixel = data[y * info.width + x];
-        if (shouldPrintBlack(pixel, x, y, dither)) {
+        if (shouldPrintBlack(pixel, x, y, dither, threshold)) {
           const byteIndex = y * widthBytes + Math.floor(x / 8);
           raster[byteIndex] |= 0x80 >> (x % 8);
         }
@@ -493,6 +497,14 @@ export class EscPosBuilder {
     this.raw(raster);
     this.feed(1);
     this.align('left');
+    return this;
+  }
+
+  cutWithFeed(mode = 'partial', lines = 3) {
+    const feedLines = Math.max(0, Number.parseInt(lines, 10) || 0);
+    this.feed(feedLines);
+    if (mode !== 'none') this.cutCommand(mode);
+    this.feed(feedLines);
     return this;
   }
 
@@ -652,9 +664,9 @@ const PRINTER_CHAR_FALLBACKS = new Map([
   ['\u253C', '+']
 ]);
 
-function shouldPrintBlack(pixel, x, y, dither) {
+function shouldPrintBlack(pixel, x, y, dither, configuredThreshold = 170) {
   if (dither === 'threshold') {
-    return pixel < 170;
+    return pixel < Math.min(255, Math.max(1, configuredThreshold));
   }
 
   const threshold = ((BAYER_8X8[y % 8][x % 8] + 0.5) / 64) * 255;

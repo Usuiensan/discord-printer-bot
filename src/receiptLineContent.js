@@ -1,6 +1,7 @@
 import { normalizePrinterTextDetailed } from './escpos.js';
 import sharp from 'sharp';
 import { existsSync, readFileSync } from 'node:fs';
+import { wrapUnicodeText } from './textLayout.js';
 
 const DEFAULT_COLUMNS = 32;
 const PROPERTY_LINE_RE = /^\s*\{([\s\S]*)\}\s*$/;
@@ -51,7 +52,7 @@ export async function appendReceiptLine(printer, document, config = {}, warnings
         });
       },
       code: (value, type, options) => printReceiptLineCode(printer, value, type, options, config),
-      cut: () => printer.cut(config.cutMode ?? 'partial')
+      cut: () => printer.cutWithFeed(config.cutMode ?? 'partial', config.cutFeedLines ?? 3)
     });
 
     if (result.error) {
@@ -269,21 +270,7 @@ function resolveColumnWidths(count, state) {
 
 function wrapReceiptText(text, width, mode) {
   if (mode === 'nowrap') return [truncateColumns(text, width)];
-  const lines = [];
-  let current = '';
-  let columns = 0;
-  for (const char of Array.from(text)) {
-    const charColumns = charWidth(char);
-    if (columns + charColumns > width && current) {
-      lines.push(current);
-      current = '';
-      columns = 0;
-    }
-    current += char;
-    columns += charColumns;
-  }
-  lines.push(current);
-  return lines;
+  return wrapUnicodeText(text, width, displayColumns);
 }
 
 function truncateColumns(text, width) {
@@ -374,17 +361,23 @@ async function printReceiptLineRaster(printer, text, config, warnings) {
     return;
   }
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
+  const fontSize = config.textImageFontSizeDots ?? 28;
+  const lineHeight = config.textImageLineHeightDots ?? 30;
+  const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.15));
   const font = resolveReceiptLineFont(config);
   let x = 0;
   const elements = Array.from(text).map((char) => {
-    const element = `<text x="${x}" y="23" font-size="24" xml:space="preserve">${escapeXml(char)}</text>`;
-    x += charWidth(char) * 12;
+    const advance = charWidth(char) * 12;
+    const fit = char.trim() ? ` textLength="${advance}" lengthAdjust="spacingAndGlyphs"` : '';
+    const element = `<text x="${x}" y="${baselineY}" font-size="${fontSize}"${fit} xml:space="preserve">${escapeXml(char)}</text>`;
+    x += advance;
     return element;
   }).join('');
-  const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="24"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
+  const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
   await printer.image(await sharp(svg).png().toBuffer(), {
     maxWidth: width,
-    dither: config.imageDitherMode ?? 'ordered'
+    dither: config.textImageDitherMode ?? 'threshold',
+    threshold: config.textImageThreshold ?? 170
   });
   const chars = [...new Set(normalizePrinterTextDetailed(text).replacements.map((item) => item.from))];
   if (chars.length > 0) {
@@ -394,22 +387,23 @@ async function printReceiptLineRaster(printer, text, config, warnings) {
 }
 
 function resolveReceiptLineFont(config) {
-  const family = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans CJK JP';
+  const family = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans Mono CJK JP';
   const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
   const selected = [
     { path: requestedPath, family },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
     { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
     { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }
   ].filter((candidate) => candidate.path).find((candidate) => existsSync(candidate.path));
-  if (!selected) return { css: '', cssFamily: '"Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", sans-serif' };
+  if (!selected) return { css: '', cssFamily: '"Noto Sans Mono CJK JP", "Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", monospace' };
   const format = selected.path.toLowerCase().endsWith('.otf') ? 'opentype' : 'truetype';
   const data = readFileSync(selected.path).toString('base64');
   const cssFamily = `"${selected.family.replace(/"/g, '\\"')}"`;
   return {
     css: `@font-face { font-family: ${cssFamily}; src: url("data:font/${format};base64,${data}") format("${format}"); }`,
-    cssFamily: `${cssFamily}, "Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", sans-serif`
+    cssFamily: `${cssFamily}, "Noto Sans Mono CJK JP", "Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", monospace`
   };
 }
 
