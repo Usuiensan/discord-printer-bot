@@ -67,6 +67,8 @@ test('one unsupported character switches all message text to one attached binary
   assert.deepEqual(job.warnings, ['"ǒ"この文字ほか1文字は出せないため画像印字モードで印刷しました']);
   assert.equal(job.printImages.length, 1);
 
+  const metadata = await sharp(job.printImages[0]).metadata();
+  assert.equal(metadata.height, 72);
   const pixels = await sharp(job.printImages[0]).grayscale().raw().toBuffer();
   assert.ok([...new Set(pixels)].every((value) => value === 0 || value === 255));
 });

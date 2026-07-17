@@ -71,6 +71,7 @@ Get-Printer | Select-Object Name
 - `CUT_FEED_LINES`: `!cut`とReceiptLineの途中カット前後に送る行数。既定値は`3`
 - `TEXT_IMAGE_FONT_PATH`: CP932外文字を画像化する等幅フォント。Debianでは`NotoSansCJK-Regular.ttc`内の`Noto Sans Mono CJK JP`を使用
 - `TEXT_IMAGE_FONT_SIZE_DOTS` / `TEXT_IMAGE_LINE_HEIGHT_DOTS`: 文字画像の字面サイズと行高。既定値は`28` / `30`
+- `TEXT_IMAGE_LINE_GAP_DOTS`: 画像化文字の行ごとに加える余白。既定値は`6`
 - `TEXT_IMAGE_DITHER_MODE` / `TEXT_IMAGE_THRESHOLD`: 文字画像専用の2値化設定。既定値は`threshold` / `170`
 - `PRINT_HEADER`: Discordヘッダーを印刷するか
 - `MERGE_SAME_USER_WINDOW_MS`: 同じユーザーの連投でヘッダーを省略する時間

@@ -87,6 +87,7 @@ export const config = {
   textImageFontFamily: optionalEnv('TEXT_IMAGE_FONT_FAMILY', 'Noto Sans Mono CJK JP'),
   textImageFontSizeDots: intEnv('TEXT_IMAGE_FONT_SIZE_DOTS', 28),
   textImageLineHeightDots: intEnv('TEXT_IMAGE_LINE_HEIGHT_DOTS', 30),
+  textImageLineGapDots: intEnv('TEXT_IMAGE_LINE_GAP_DOTS', 6),
   textImageDitherMode: enumEnv('TEXT_IMAGE_DITHER_MODE', 'threshold', ['ordered', 'threshold']),
   textImageThreshold: intEnv('TEXT_IMAGE_THRESHOLD', 170),
   cutFeedLines: intEnv('CUT_FEED_LINES', 3),

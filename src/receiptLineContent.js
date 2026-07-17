@@ -368,7 +368,7 @@ async function printReceiptLineRaster(printer, text, config, warnings, rasterBat
   if (!text) {
     if (rasterBatch) {
       const width = config.printWidthDots ?? printer.widthDots ?? 384;
-      const height = config.textImageLineHeightDots ?? 30;
+      const height = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
       rasterBatch.images.push(await sharp({
         create: { width, height, channels: 3, background: '#ffffff' }
       }).png().toBuffer());
@@ -379,7 +379,7 @@ async function printReceiptLineRaster(printer, text, config, warnings, rasterBat
   }
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
   const fontSize = config.textImageFontSizeDots ?? 28;
-  const lineHeight = config.textImageLineHeightDots ?? 30;
+  const lineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
   const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.15));
   const font = resolveReceiptLineFont(config);
   let x = 0;
