@@ -93,11 +93,22 @@ TEXT_IMAGE_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 TEXT_IMAGE_FONT_FAMILY=Noto Sans Mono CJK JP
 TEXT_IMAGE_FONT_SIZE_DOTS=28
 TEXT_IMAGE_LINE_HEIGHT_DOTS=30
+TEXT_IMAGE_LINE_GAP_DOTS=6
 TEXT_IMAGE_DITHER_MODE=threshold
 TEXT_IMAGE_THRESHOLD=170
 ```
 
 `PRINTER_BACKEND=linux-usb` の場合、`PRINTER_NAME` は不要です。
+
+### 更新と再デプロイ
+
+更新、依存関係の反映、検査、テスト、サービス再起動をまとめて実行できます。
+
+```bash
+sudo /opt/discord-printer-bot/tools/update-debian.sh
+```
+
+リポジトリ、実行ユーザー、サービス名、ブランチを変更する場合は、それぞれ`DISCORD_PRINTER_REPO_DIR`、`DISCORD_PRINTER_BOT_USER`、`DISCORD_PRINTER_SERVICE`、`DISCORD_PRINTER_BRANCH`を指定します。
 
 ## 動作確認
 

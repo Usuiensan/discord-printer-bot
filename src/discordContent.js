@@ -1341,7 +1341,10 @@ export function shouldRenderTextAsImage(text, config = {}) {
 
 async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text, rasterBatch = null) {
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
-  const lineHeight = Math.ceil((config.textImageLineHeightDots ?? 30) * Math.max(1, line.sizeY ?? 1));
+  const lineHeight = Math.ceil(
+    ((config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6))
+    * Math.max(1, line.sizeY ?? 1)
+  );
   const rasterLine = {
     ...line,
     raster: true,
