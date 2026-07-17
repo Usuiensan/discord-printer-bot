@@ -51,7 +51,7 @@ ls -l /dev/usb/lp0
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl git
+sudo apt install -y ca-certificates curl git fonts-vlgothic fonts-noto-cjk
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 git clone <このリポジトリのURL> /opt/discord-printer-bot
@@ -83,8 +83,18 @@ PRINTER_MONITOR_INTERVAL_MS=10000
 
 PRINT_WIDTH_DOTS=384
 CUT_MODE=partial
+CUT_FEED_LINES=3
 PRINT_HEADER=true
 PRINT_AUTHOR_AVATAR=true
+PRINT_FONT_PATH=/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf
+PRINT_FONT_FAMILY=VL Gothic
+TEXT_RENDER_MODE=auto
+TEXT_IMAGE_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc
+TEXT_IMAGE_FONT_FAMILY=Noto Sans Mono CJK JP
+TEXT_IMAGE_FONT_SIZE_DOTS=28
+TEXT_IMAGE_LINE_HEIGHT_DOTS=30
+TEXT_IMAGE_DITHER_MODE=threshold
+TEXT_IMAGE_THRESHOLD=170
 ```
 
 `PRINTER_BACKEND=linux-usb` の場合、`PRINTER_NAME` は不要です。

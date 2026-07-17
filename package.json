@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "bridge": "node src/printBridge.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js && node --check src/receiptLineContent.js && node --check src/printBridge.js && node --check tools/linux-printer-status.js && node --check tools/linux-rawprint.js",
+    "check": "node --check src/index.js && node --check src/escpos.js && node --check src/printer.js && node --check src/discordContent.js && node --check src/symbolContent.js && node --check src/receiptLineContent.js && node --check src/textLayout.js && node --check src/printBridge.js && node --check tools/linux-printer-status.js && node --check tools/linux-rawprint.js",
     "discord:diagnose": "node tools/diagnose-discord.js",
     "discord:delete-commands": "node tools/delete-discord-commands.js",
     "linux:status": "node tools/linux-printer-status.js",
@@ -24,6 +24,7 @@
     "dotenv": "^16.4.5",
     "emoji-regex": "^10.3.0",
     "iconv-lite": "^0.6.3",
+    "linebreak": "^1.1.0",
     "sharp": "^0.33.4"
   },
   "engines": {

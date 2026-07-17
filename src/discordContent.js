@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
 import { appendReceiptLine, extractReceiptLineMessage, renderReceiptLinePreview } from './receiptLineContent.js';
 import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLines } from './symbolContent.js';
+import { wrapUnicodeText } from './textLayout.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
 const IMAGE_EXT_RE = /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i;
@@ -254,7 +255,7 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       continue;
     }
 
-    const controlResult = applyEscPosTextCommand(printer, rawLine, layoutState);
+    const controlResult = applyEscPosTextCommand(printer, rawLine, layoutState, options.config);
     if (controlResult.applied) continue;
     if (controlResult.error) {
       printTextLine(printer, `[ESC/POSコマンドエラー: ${controlResult.error}]`, warnings);
@@ -369,7 +370,7 @@ function renderTextPreview(text, options = {}) {
   return lines;
 }
 
-function applyEscPosTextCommand(printer, line, layoutState = createLayoutState()) {
+function applyEscPosTextCommand(printer, line, layoutState = createLayoutState(), config = {}) {
   const trimmed = line.trim();
   const match = trimmed.match(/^!(?:escpos\s+)?([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+(.*))?$/);
   if (!match) return { applied: false };
@@ -516,7 +517,7 @@ function applyEscPosTextCommand(printer, line, layoutState = createLayoutState()
         printer.motionUnits(args[0], args[1]);
         return { applied: true };
       case 'cut':
-        printer.cut(normalizeCommandName(args[0] ?? 'partial'));
+        printer.cutWithFeed(normalizeCommandName(args[0] ?? 'partial'), config.cutFeedLines ?? 3);
         return { applied: true };
       case 'drawer':
       case 'pulse':
@@ -675,7 +676,7 @@ function previewLine(text, layoutState = createLayoutState(), overrides = {}) {
 function previewFontSize(line) {
   // Native TM-T70II Font A is 24 dots high. Raster fallback must use the
   // same physical size as native Japanese text, not the smaller preview font.
-  const baseFontSize = line.raster ? 24 : (line.small ? 14 : 18);
+  const baseFontSize = line.raster ? (line.rasterFontSize ?? 28) : (line.small ? 14 : 18);
   return Math.max(8, Math.round(baseFontSize * Math.max(1, line.sizeY ?? 1)));
 }
 
@@ -723,7 +724,10 @@ function layoutPreviewTextElements(line, options) {
   return layoutPreviewTextRuns(line, options).map((run) => {
     const weight = run.bold ? '700' : '400';
     const decoration = run.underline ? ' text-decoration="underline"' : '';
-    return `<text x="${run.x}" y="${run.y}" font-size="${run.fontSize}" font-weight="${weight}"${decoration} xml:space="preserve">${escapeXml(run.text)}</text>`;
+    const fit = options.fitGlyphs && run.text.trim()
+      ? ` textLength="${run.width}" lengthAdjust="spacingAndGlyphs"`
+      : '';
+    return `<text x="${run.x}" y="${run.y}" font-size="${run.fontSize}" font-weight="${weight}"${decoration}${fit} xml:space="preserve">${escapeXml(run.text)}</text>`;
   });
 }
 
@@ -1277,15 +1281,22 @@ export function shouldRenderTextAsImage(text, config = {}) {
 
 async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text) {
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
-  const lineHeight = Math.ceil(24 * Math.max(1, line.sizeY ?? 1));
-  const rasterLine = { ...line, raster: true };
+  const lineHeight = Math.ceil((config.textImageLineHeightDots ?? 30) * Math.max(1, line.sizeY ?? 1));
+  const rasterLine = {
+    ...line,
+    raster: true,
+    rasterFontSize: line.small
+      ? Math.round((config.textImageFontSizeDots ?? 28) * 17 / 24)
+      : (config.textImageFontSizeDots ?? 28)
+  };
   const font = resolveTextImageFont(config);
   const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.2));
   const elements = layoutPreviewTextElements(rasterLine, {
     width,
     padding: 0,
     y: baselineY,
-    fontFamily: font.family
+    fontFamily: font.family,
+    fitGlyphs: true
   });
   const svg = Buffer.from(`
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}" viewBox="0 0 ${width} ${lineHeight}">
@@ -1294,7 +1305,11 @@ async function printRasterTextLine(printer, line, warnings, config = {}, sourceT
   ${elements}
 </svg>`);
   const png = await sharp(svg).png().toBuffer();
-  await printer.image(png, { maxWidth: width, dither: config.imageDitherMode ?? 'ordered' });
+  await printer.image(png, {
+    maxWidth: width,
+    dither: config.textImageDitherMode ?? 'threshold',
+    threshold: config.textImageThreshold ?? 170
+  });
   printer.align(line.align ?? 'left');
   recordImageRenderedChars(sourceText, warnings);
 }
@@ -2008,56 +2023,7 @@ function twemojiAssetUrl(codepoints) {
 }
 
 function wrapText(text, maxColumns) {
-  const lines = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    let line = '';
-    let columns = 0;
-    for (const unit of textWrapUnits(rawLine)) {
-      const width = displayColumns(unit);
-      if (columns + width > maxColumns && line) {
-        lines.push(line);
-        line = '';
-        columns = 0;
-      }
-      if (width > maxColumns) {
-        for (const char of Array.from(unit)) {
-          const charColumns = charWidth(char);
-          if (columns + charColumns > maxColumns && line) {
-            lines.push(line);
-            line = '';
-            columns = 0;
-          }
-          line += char;
-          columns += charColumns;
-        }
-      } else {
-        line += unit;
-        columns += width;
-      }
-    }
-    lines.push(line);
-  }
-  return lines;
-}
-
-function textWrapUnits(line) {
-  const units = [];
-  const pattern = /:emoji_[0-9a-f_]+:|:[A-Za-z0-9_+-]+:/gi;
-  let index = 0;
-
-  for (const match of line.matchAll(pattern)) {
-    if (match.index > index) {
-      units.push(...Array.from(line.slice(index, match.index)));
-    }
-    units.push(match[0]);
-    index = match.index + match[0].length;
-  }
-
-  if (index < line.length) {
-    units.push(...Array.from(line.slice(index)));
-  }
-
-  return units;
+  return wrapUnicodeText(text, maxColumns, displayColumns);
 }
 
 export function displayColumns(text) {
@@ -2065,15 +2031,16 @@ export function displayColumns(text) {
 }
 
 function resolveTextImageFont(config = {}) {
-  const configuredFamily = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans CJK JP';
+  const configuredFamily = config.textImageFontFamily || process.env.TEXT_IMAGE_FONT_FAMILY || 'Noto Sans Mono CJK JP';
   const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
   return resolveEmbeddedFont([
     { path: requestedPath, family: configuredFamily },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
     { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
     { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }
-  ], configuredFamily, '"Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", "IPA Gothic", "Unifont", sans-serif');
+  ], configuredFamily, '"Noto Sans Mono CJK JP", "Noto Sans CJK JP", "Microsoft YaHei", "Yu Gothic", "IPA Gothic", "Unifont", monospace');
 }
 
 function resolveEmbeddedFont(candidates, configuredFamily, fallbackCssFamily) {
