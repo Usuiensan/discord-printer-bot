@@ -38,21 +38,29 @@ export async function renderReceiptLinePreview(document, config = {}) {
   return rows.length > 0 ? rows : [previewRow('[ReceiptLine: 空の文書]')];
 }
 
-export async function appendReceiptLine(printer, document, config = {}, warnings = []) {
+export async function appendReceiptLine(printer, document, config = {}, warnings = [], options = {}) {
   const state = createReceiptLineState(config);
+  const rasterBatch = { images: [], artifacts: options.textPrintImages ?? [] };
 
   for (const rawLine of parseReceiptLinePhysicalLines(document)) {
     const result = await applyReceiptLineLine(rawLine, state, {
-      text: (line) => printReceiptLineText(printer, line, config, warnings),
-      styledText: (line) => printReceiptLineStyledText(printer, line, config, warnings),
+      text: (line) => printReceiptLineText(printer, line, config, warnings, rasterBatch),
+      styledText: (line) => printReceiptLineStyledText(printer, line, config, warnings, rasterBatch),
       image: async (base64) => {
+        await flushReceiptLineRasterBatch(printer, rasterBatch, config);
         await printer.image(Buffer.from(base64, 'base64'), {
           maxWidth: state.printWidthDots,
           dither: config.imageDitherMode
         });
       },
-      code: (value, type, options) => printReceiptLineCode(printer, value, type, options, config),
-      cut: () => printer.cutWithFeed(config.cutMode ?? 'partial', config.cutFeedLines ?? 3)
+      code: async (value, type, codeOptions) => {
+        await flushReceiptLineRasterBatch(printer, rasterBatch, config);
+        printReceiptLineCode(printer, value, type, codeOptions, config);
+      },
+      cut: async () => {
+        await flushReceiptLineRasterBatch(printer, rasterBatch, config);
+        printer.cutWithFeed(config.cutMode ?? 'partial', config.cutFeedLines ?? 3);
+      }
     });
 
     if (result.error) {
@@ -60,6 +68,7 @@ export async function appendReceiptLine(printer, document, config = {}, warnings
       printer.line(`[ReceiptLineエラー: ${result.error}]`);
     }
   }
+  await flushReceiptLineRasterBatch(printer, rasterBatch, config);
 }
 
 function cleanReceiptLinePayload(value) {
@@ -162,7 +171,7 @@ async function applyReceiptLineProperties(properties, state, output) {
     return;
   }
   if (normalized.code) {
-    output.code(unescapeReceiptLineText(normalized.code), state.codeOptions.type, state.codeOptions);
+    await output.code(unescapeReceiptLineText(normalized.code), state.codeOptions.type, state.codeOptions);
     return;
   }
   if (normalized.command) return;
@@ -331,18 +340,18 @@ function printStyledSegments(printer, segments) {
   printer.feed(1);
 }
 
-async function printReceiptLineStyledText(printer, line, config, warnings) {
+async function printReceiptLineStyledText(printer, line, config, warnings, rasterBatch = null) {
   const text = line.segments.map((segment) => stripStyleMarkers(segment.text)).join('');
   if (shouldRasterReceiptLineText(text, config)) {
-    await printReceiptLineRaster(printer, text, config, warnings);
+    await printReceiptLineRaster(printer, text, config, warnings, rasterBatch);
   } else {
     printStyledSegments(printer, line.segments);
   }
 }
 
-async function printReceiptLineText(printer, text, config, warnings) {
+async function printReceiptLineText(printer, text, config, warnings, rasterBatch = null) {
   if (shouldRasterReceiptLineText(text, config)) {
-    await printReceiptLineRaster(printer, text, config, warnings);
+    await printReceiptLineRaster(printer, text, config, warnings, rasterBatch);
   } else {
     printer.line(text);
   }
@@ -355,9 +364,17 @@ function shouldRasterReceiptLineText(text, config) {
   return normalizePrinterTextDetailed(text).replacements.length > 0;
 }
 
-async function printReceiptLineRaster(printer, text, config, warnings) {
+async function printReceiptLineRaster(printer, text, config, warnings, rasterBatch = null) {
   if (!text) {
-    printer.feed(1);
+    if (rasterBatch) {
+      const width = config.printWidthDots ?? printer.widthDots ?? 384;
+      const height = config.textImageLineHeightDots ?? 30;
+      rasterBatch.images.push(await sharp({
+        create: { width, height, channels: 3, background: '#ffffff' }
+      }).png().toBuffer());
+    } else {
+      printer.feed(1);
+    }
     return;
   }
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
@@ -374,16 +391,45 @@ async function printReceiptLineRaster(printer, text, config, warnings) {
     return element;
   }).join('');
   const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
-  await printer.image(await sharp(svg).png().toBuffer(), {
+  const threshold = config.textImageThreshold ?? 170;
+  const png = await sharp(svg).grayscale().threshold(threshold).png().toBuffer();
+  if (rasterBatch) {
+    rasterBatch.images.push(png);
+  } else {
+    await printer.image(png, {
     maxWidth: width,
     dither: config.textImageDitherMode ?? 'threshold',
-    threshold: config.textImageThreshold ?? 170
-  });
+      threshold
+    });
+  }
   const chars = [...new Set(normalizePrinterTextDetailed(text).replacements.map((item) => item.from))];
-  if (chars.length > 0) {
+  if (chars.length > 0 && config.textRenderMode !== 'image') {
     const warning = `プリンタ文字コード外の文字を画像として印刷しました: ${chars.join(' ')}`;
     if (!warnings.includes(warning)) warnings.push(warning);
   }
+}
+
+async function flushReceiptLineRasterBatch(printer, rasterBatch, config) {
+  if (rasterBatch.images.length === 0) return;
+  const width = config.printWidthDots ?? printer.widthDots ?? 384;
+  const metadata = await Promise.all(rasterBatch.images.map((image) => sharp(image).metadata()));
+  const height = metadata.reduce((sum, item) => sum + (item.height ?? 0), 0);
+  let top = 0;
+  const composites = rasterBatch.images.map((input, index) => {
+    const item = { input, left: 0, top };
+    top += metadata[index].height ?? 0;
+    return item;
+  });
+  const image = await sharp({
+    create: { width, height: Math.max(1, height), channels: 3, background: '#ffffff' }
+  }).composite(composites).png().toBuffer();
+  rasterBatch.images.length = 0;
+  await printer.image(image, {
+    maxWidth: width,
+    dither: 'threshold',
+    threshold: config.textImageThreshold ?? 170
+  });
+  rasterBatch.artifacts.push(image);
 }
 
 function resolveReceiptLineFont(config) {
@@ -391,8 +437,7 @@ function resolveReceiptLineFont(config) {
   const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
   const selected = [
     { path: requestedPath, family },
-    { path: '/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
-    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
     { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
     { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }

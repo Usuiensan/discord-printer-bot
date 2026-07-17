@@ -20,7 +20,7 @@ sudo apt install fonts-noto-cjk
 
 ```env
 TEXT_RENDER_MODE=auto
-TEXT_IMAGE_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc
+TEXT_IMAGE_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 TEXT_IMAGE_FONT_FAMILY=Noto Sans Mono CJK JP
 TEXT_IMAGE_FONT_SIZE_DOTS=28
 TEXT_IMAGE_LINE_HEIGHT_DOTS=30
@@ -28,7 +28,7 @@ TEXT_IMAGE_DITHER_MODE=threshold
 TEXT_IMAGE_THRESHOLD=170
 ```
 
-`TEXT_RENDER_MODE=text` は従来どおり非対応文字を置換し、`image` は本文の全行を画像化します。`auto` ではバーコード、QRコード、カットなどはプリンタ内蔵コマンドのまま、非対応文字を含む通常行または `!row` 行だけを画像化します。
+`TEXT_RENDER_MODE=image`は本文の全行を画像化します。`auto`では1文字でもプリンタ文字コード外の文字があれば、その印刷ジョブ内の全テキストを画像モードへ統一します。連続する文字行は縦結合した1枚の2値画像として送信し、QRコード、バーコード、カット、途中の添付画像がある箇所だけ画像ブロックを分割します。画像モードを使用した場合、実際に印字指示した2値画像をDiscordの完了通知へ添付します。
 文字画像には完全2値化を使い、添付画像・絵文字・ヘッダーには`IMAGE_DITHER_MODE`を使います。本文の折り返しは英単語と日本語の禁則処理を考慮し、行幅を超える単語だけ緊急分割します。
 
 ## 基本
