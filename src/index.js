@@ -34,7 +34,7 @@ function enqueuePrint(message) {
     const omitHeader = shouldOmitHeader(message);
     const printNumber = omitHeader ? null : await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings } = await buildPrintJob(message, config, {
+    const { bytes, warnings, printImages } = await buildPrintJob(message, config, {
       printHeader: !omitHeader,
       printNumber
     });
@@ -54,7 +54,7 @@ function enqueuePrint(message) {
       createdTimestamp: message.createdTimestamp
     };
     if (warnings.length > 0) {
-      await markPrintWarning(message, warnings);
+      await markPrintWarning(message, warnings, printImages);
       console.log(`Printed message ${message.id} from ${message.author.tag} with ${warnings.length} warning(s)`);
     } else {
       await markPrintSuccess(message, hasNearEndWarning());
@@ -105,7 +105,7 @@ function enqueueReprint(message, targetMessage) {
     const omitHeader = false;
     const printNumber = await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings } = await buildPrintJob(targetMessage, config, {
+    const { bytes, warnings, printImages } = await buildPrintJob(targetMessage, config, {
       printHeader: !omitHeader,
       printNumber
     });
@@ -123,7 +123,7 @@ function enqueueReprint(message, targetMessage) {
       createdTimestamp: targetMessage.createdTimestamp
     };
     if (warnings.length > 0) {
-      await markPrintWarning(message, warnings);
+      await markPrintWarning(message, warnings, printImages);
       console.log(`Reprinted message ${targetMessage.id} requested by ${message.author.tag} with ${warnings.length} warning(s)`);
     } else {
       await markPrintSuccess(message, hasNearEndWarning());
@@ -229,23 +229,35 @@ function hasNearEndWarning() {
   return latestPrinterProblems.includes(NEAR_END_PROBLEM);
 }
 
-async function markPrintWarning(message, warnings) {
-  await removeBotReaction(message, config.printedReaction).catch((error) => {
-    console.error(`Failed to remove success reaction from message ${message.id}:`, error);
-  });
+async function markPrintWarning(message, warnings, printImages = []) {
+  const imageModeMessage = warnings.find((warning) => warning.includes('画像印字モードで印刷しました'));
   await removeBotReaction(message, config.printNearEndReaction).catch((error) => {
     console.error(`Failed to remove near-end reaction from message ${message.id}:`, error);
   });
-  await addReaction(message, config.printErrorReaction);
+  if (imageModeMessage) {
+    await removeBotReaction(message, config.printErrorReaction).catch(() => {});
+    await addReaction(message, config.printedReaction);
+  } else {
+    await removeBotReaction(message, config.printedReaction).catch((error) => {
+      console.error(`Failed to remove success reaction from message ${message.id}:`, error);
+    });
+    await addReaction(message, config.printErrorReaction);
+  }
 
-  const warningText = warnings.slice(0, 5).map((warning) => `- ${warning}`).join('\n');
-  const more = warnings.length > 5 ? `\n...ほか ${warnings.length - 5} 件` : '';
-  const intro = warnings.every((warning) => warning.startsWith('プリンタ文字コード外の文字を画像として印刷しました:'))
+  const otherWarnings = warnings.filter((warning) => warning !== imageModeMessage);
+  const warningText = otherWarnings.slice(0, 5).map((warning) => `- ${warning}`).join('\n');
+  const more = otherWarnings.length > 5 ? `\n...ほか ${otherWarnings.length - 5} 件` : '';
+  const intro = imageModeMessage
+    ?? (warnings.every((warning) => warning.startsWith('プリンタ文字コード外の文字を画像として印刷しました:'))
     ? '印刷は完了しました。プリンタ文字コード外の文字は画像として印刷しました。'
     : warnings.every((warning) => warning.includes('を「') && warning.includes('に置換しました'))
       ? '印刷は完了しましたが、文字を置換しました。'
-      : '印刷は完了しましたが、一部の内容を印刷できませんでした。';
-  await replyToMessage(message, `${intro}\n${warningText}${more}`);
+      : '印刷は完了しましたが、一部の内容を印刷できませんでした。');
+  const attachments = printImages.slice(0, 10).map((image, index) => new AttachmentBuilder(image, {
+    name: index === 0 ? 'image-print.png' : `image-print-${index + 1}.png`
+  }));
+  const details = warningText ? `\n${warningText}${more}` : '';
+  await replyToMessage(message, `${intro}${details}`, attachments);
 }
 
 async function markPrintRetry(message, retry) {
@@ -277,10 +289,11 @@ async function addReaction(message, emoji) {
   }
 }
 
-async function replyToMessage(message, content) {
+async function replyToMessage(message, content, files = []) {
   try {
     await message.reply({
       content,
+      files,
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {

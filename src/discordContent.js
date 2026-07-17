@@ -16,6 +16,7 @@ const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0
 export async function buildPrintJob(message, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
   const warnings = [];
+  const textPrintImages = [];
 
   await appendDiscordHeader(printer, message, config, {
     printHeader: options.printHeader,
@@ -25,11 +26,15 @@ export async function buildPrintJob(message, config, options = {}) {
 
   const receiptLineDocument = extractReceiptLineMessage(message.content ?? '', config.messageCommandPrefix);
   if (receiptLineDocument != null) {
-    await appendReceiptLine(printer, receiptLineDocument, config, warnings);
+    const unsupportedChars = unsupportedPrinterCharacters(receiptLineDocument);
+    const jobConfig = imageModeConfig(config, unsupportedChars);
+    if (unsupportedChars.length > 0) warnings.push(imageModeWarning(unsupportedChars));
+    await appendReceiptLine(printer, receiptLineDocument, jobConfig, warnings, { textPrintImages });
     printer.cut(config.cutMode);
     return {
       bytes: printer.build(),
       warnings,
+      printImages: await composeTextPrintImages(textPrintImages, config.printWidthDots),
     };
   }
 
@@ -38,13 +43,17 @@ export async function buildPrintJob(message, config, options = {}) {
     ? { ...message, content: symbolExtraction.text }
     : message;
   const { text, imageItems, urls } = await extractMessageContent(contentMessage, config);
+  const unsupportedChars = await collectJobUnsupportedCharacters(contentMessage, text, imageItems, config);
+  const jobConfig = imageModeConfig(config, unsupportedChars);
+  if (unsupportedChars.length > 0) warnings.push(imageModeWarning(unsupportedChars));
   const imageState = createInlineImageState();
 
   await printTextBlock(printer, text, warnings, {
-    config,
+    config: jobConfig,
     prefix: config.messageCommandPrefix,
     imageItems,
-    imageState
+    imageState,
+    textPrintImages
   });
 
   if (config.printUrlQr && urls.length > 0) {
@@ -56,9 +65,9 @@ export async function buildPrintJob(message, config, options = {}) {
     }
   }
 
-  await printImageItems(printer, remainingImageItems(imageItems, imageState), config, warnings);
-  await printStickers(printer, message, config, warnings);
-  await printForwardedSnapshots(printer, message, config, warnings);
+  await printImageItems(printer, remainingImageItems(imageItems, imageState), jobConfig, warnings, { textPrintImages });
+  await printStickers(printer, message, jobConfig, warnings, textPrintImages);
+  await printForwardedSnapshots(printer, message, jobConfig, warnings, textPrintImages);
 
   if (symbolExtraction.commands.length > 0) {
     await appendSymbolItems(printer, symbolExtraction.commands, config);
@@ -73,7 +82,32 @@ export async function buildPrintJob(message, config, options = {}) {
   return {
     bytes: printer.build(),
     warnings,
+    printImages: await composeTextPrintImages(textPrintImages, config.printWidthDots),
   };
+}
+
+function imageModeConfig(config, unsupportedChars) {
+  if (unsupportedChars.length === 0 || config.textRenderMode === 'image') return config;
+  return { ...config, textRenderMode: 'image' };
+}
+
+async function collectJobUnsupportedCharacters(message, primaryText, primaryImageItems, config) {
+  const texts = [primaryText, ...primaryImageItems.map((item) => item.label ?? '')];
+  texts.push(...valuesOf(message.stickers).map((sticker) => `[スタンプ: ${sticker.name ?? ''}]`));
+  for (const snapshot of valuesOf(message.messageSnapshots)) {
+    const extracted = await extractMessageContent(snapshot, config);
+    texts.push(extracted.text, ...extracted.imageItems.map((item) => item.label ?? ''));
+    texts.push(...valuesOf(snapshot.stickers).map((sticker) => `[スタンプ: ${sticker.name ?? ''}]`));
+  }
+  return unsupportedPrinterCharacters(texts.join('\n'));
+}
+
+export function unsupportedPrinterCharacters(text) {
+  return [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.map((item) => item.from))];
+}
+
+export function imageModeWarning(chars) {
+  return `"${chars[0]}"この文字ほか${Math.max(0, chars.length - 1)}文字は出せないため画像印字モードで印刷しました`;
 }
 
 export async function buildMemberJoinPrintJob(member, config, options = {}) {
@@ -230,16 +264,21 @@ async function printTextBlock(printer, text, warnings, options = {}) {
   const printableText = formatDiscordMarkdownForPrint(text);
   if (!printableText.trim()) return;
 
+  const rasterBatch = { images: [], artifacts: options.textPrintImages ?? [] };
+  const blockOptions = { ...options, rasterBatch };
   const layoutState = createLayoutState();
   const rawLines = printableText.trim().split(/\r?\n/);
   for (const rawLine of rawLines) {
+    if (INLINE_IMAGE_MARKER_RE.test(rawLine) || isInlineImageCommandLine(rawLine, options.prefix)) {
+      await flushRasterBatch(printer, rasterBatch, options.config);
+    }
     const inlineImageResult = await applyInlineImageMarker(printer, rawLine, warnings, {
-      ...options,
+      ...blockOptions,
       layoutState
     });
     if (inlineImageResult.applied) continue;
 
-    const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, options);
+    const imageResult = await applyInlineImageCommand(printer, rawLine, warnings, blockOptions);
     if (imageResult.applied) continue;
     if (imageResult.error) {
       printTextLine(printer, `[画像コマンドエラー: ${imageResult.error}]`, warnings);
@@ -247,7 +286,7 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       continue;
     }
 
-    const receiptResult = await applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState, options);
+    const receiptResult = await applyReceiptLayoutCommand(printer, rawLine, warnings, layoutState, blockOptions);
     if (receiptResult.applied) continue;
     if (receiptResult.error) {
       printTextLine(printer, `[レシートコマンドエラー: ${receiptResult.error}]`, warnings);
@@ -255,6 +294,9 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       continue;
     }
 
+    if (controlCommandRequiresRasterFlush(rawLine)) {
+      await flushRasterBatch(printer, rasterBatch, options.config);
+    }
     const controlResult = applyEscPosTextCommand(printer, rawLine, layoutState, options.config);
     if (controlResult.applied) continue;
     if (controlResult.error) {
@@ -289,7 +331,7 @@ async function printTextBlock(printer, text, warnings, options = {}) {
     }
     for (const line of wrapText(textToPrint, maxCols)) {
       await printStyledTextLineWithFallback(printer, line, warnings, {
-        ...options,
+        ...blockOptions,
         layoutState: {
           ...layoutState,
           small: layoutState.small || isSmall,
@@ -305,7 +347,22 @@ async function printTextBlock(printer, text, warnings, options = {}) {
       printer.smallText(false);
     }
   }
+  await flushRasterBatch(printer, rasterBatch, options.config);
   printer.feed(1);
+}
+
+function isInlineImageCommandLine(line, prefix = '!') {
+  return String(line).trimStart().toLowerCase().startsWith(`${prefix}img`);
+}
+
+function controlCommandRequiresRasterFlush(line) {
+  const match = String(line).trim().match(/^!(?:escpos\s+)?([a-zA-Z][a-zA-Z0-9_-]*)/);
+  if (!match) return false;
+  return new Set([
+    'feed', 'cr', 'tab', 'ht', 'feeddots', 'feed_dots', 'position', 'pos',
+    'relative', 'rel', 'cut', 'drawer', 'pulse', 'buzzer', 'beep', 'page',
+    'pagemode', 'page_mode'
+  ]).has(normalizeCommandName(match[1]));
 }
 
 function renderTextPreview(text, options = {}) {
@@ -770,7 +827,10 @@ async function applyReceiptLayoutCommand(printer, line, warnings, layoutState, o
     }
 
     for (const outputLine of renderReceiptLayoutCommand(command, layoutState)) {
-      printStyledTextLine(printer, outputLine, warnings);
+      await printStyledTextLineWithFallback(printer, outputLine, warnings, {
+        ...options,
+        layoutState
+      });
     }
     return { applied: true };
   } catch (error) {
@@ -789,7 +849,7 @@ async function printReceiptRowCommand(printer, body, warnings, layoutState, opti
 
   if (shouldRenderTextAsImage(`${left}${right}`, options.config)) {
     for (const row of renderPreviewReceiptRow(body, layoutState)) {
-      await printRasterTextLine(printer, row, warnings, options.config, `${left}${right}`);
+      await printRasterTextLine(printer, row, warnings, options.config, `${left}${right}`, options.rasterBatch);
     }
     return;
   }
@@ -1269,7 +1329,7 @@ async function printStyledTextLineWithFallback(printer, line, warnings, options 
     bold: token.bold,
     underline: token.underline
   })));
-  await printRasterTextLine(printer, previewLine(text, options.layoutState, { charStyles }), warnings, options.config, line);
+  await printRasterTextLine(printer, previewLine(text, options.layoutState, { charStyles }), warnings, options.config, line, options.rasterBatch);
 }
 
 export function shouldRenderTextAsImage(text, config = {}) {
@@ -1279,7 +1339,7 @@ export function shouldRenderTextAsImage(text, config = {}) {
   return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.length > 0;
 }
 
-async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text) {
+async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text, rasterBatch = null) {
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
   const lineHeight = Math.ceil((config.textImageLineHeightDots ?? 30) * Math.max(1, line.sizeY ?? 1));
   const rasterLine = {
@@ -1304,14 +1364,51 @@ async function printRasterTextLine(printer, line, warnings, config = {}, sourceT
   <rect width="100%" height="100%" fill="white"/>
   ${elements}
 </svg>`);
-  const png = await sharp(svg).png().toBuffer();
+  const threshold = config.textImageThreshold ?? 170;
+  const png = await sharp(svg).grayscale().threshold(threshold).png().toBuffer();
+  if (rasterBatch) {
+    rasterBatch.images.push(png);
+    if (config.textRenderMode !== 'image') recordImageRenderedChars(sourceText, warnings);
+    return;
+  }
   await printer.image(png, {
     maxWidth: width,
     dither: config.textImageDitherMode ?? 'threshold',
-    threshold: config.textImageThreshold ?? 170
+    threshold
   });
   printer.align(line.align ?? 'left');
   recordImageRenderedChars(sourceText, warnings);
+}
+
+async function flushRasterBatch(printer, rasterBatch, config = {}) {
+  if (!rasterBatch || rasterBatch.images.length === 0) return;
+  const image = await combineRasterImages(rasterBatch.images, config.printWidthDots ?? printer.widthDots ?? 384);
+  rasterBatch.images.length = 0;
+  await printer.image(image, {
+    maxWidth: config.printWidthDots ?? printer.widthDots ?? 384,
+    dither: 'threshold',
+    threshold: config.textImageThreshold ?? 170
+  });
+  rasterBatch.artifacts.push(image);
+}
+
+async function combineRasterImages(images, width) {
+  const metadata = await Promise.all(images.map((image) => sharp(image).metadata()));
+  const height = metadata.reduce((sum, item) => sum + (item.height ?? 0), 0);
+  let top = 0;
+  const composites = images.map((input, index) => {
+    const item = { input, left: 0, top };
+    top += metadata[index].height ?? 0;
+    return item;
+  });
+  return sharp({
+    create: { width, height: Math.max(1, height), channels: 3, background: '#ffffff' }
+  }).composite(composites).png().toBuffer();
+}
+
+async function composeTextPrintImages(images, width = 384) {
+  if (images.length === 0) return [];
+  return [await combineRasterImages(images, width)];
 }
 
 function recordImageRenderedChars(text, warnings) {
@@ -1330,7 +1427,15 @@ async function printImageItems(printer, imageItems, config, warnings, options = 
   const printLabel = options.printLabel ?? true;
   for (const item of imageItems) {
     try {
-      if (printLabel && item.label) printTextLine(printer, item.label, warnings);
+      if (printLabel && item.label) {
+        await printTextBlock(printer, item.label, warnings, {
+          config,
+          prefix: config.messageCommandPrefix,
+          imageItems: [],
+          imageState: createInlineImageState(),
+          textPrintImages: options.textPrintImages ?? []
+        });
+      }
       const bytes = await fetchFirstImage(item.urls ?? [item.url], config);
       await printer.image(bytes, {
         maxWidth,
@@ -1344,7 +1449,7 @@ async function printImageItems(printer, imageItems, config, warnings, options = 
   }
 }
 
-async function printStickers(printer, message, config, warnings) {
+async function printStickers(printer, message, config, warnings, textPrintImages = []) {
   const stickers = valuesOf(message.stickers);
   if (stickers.length === 0) return;
 
@@ -1352,7 +1457,13 @@ async function printStickers(printer, message, config, warnings) {
     const url = sticker.url;
     if (!url) continue;
     try {
-      printTextLine(printer, `[スタンプ: ${sticker.name}]`, warnings);
+      await printTextBlock(printer, `[スタンプ: ${sticker.name}]`, warnings, {
+        config,
+        prefix: config.messageCommandPrefix,
+        imageItems: [],
+        imageState: createInlineImageState(),
+        textPrintImages
+      });
       const bytes = await fetchImage(url, config);
       await printer.image(bytes, {
         maxWidth: Math.min(config.printWidthDots, 256),
@@ -1366,7 +1477,7 @@ async function printStickers(printer, message, config, warnings) {
   }
 }
 
-async function printForwardedSnapshots(printer, message, config, warnings) {
+async function printForwardedSnapshots(printer, message, config, warnings, textPrintImages = []) {
   const snapshots = valuesOf(message.messageSnapshots);
   if (snapshots.length === 0) return;
 
@@ -1374,12 +1485,19 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
     const { text, imageItems, urls } = await extractMessageContent(snapshot, config);
     const imageState = createInlineImageState();
 
-    printTextLine(printer, '[転送メッセージ]', warnings);
+    await printTextBlock(printer, '[転送メッセージ]', warnings, {
+      config,
+      prefix: config.messageCommandPrefix,
+      imageItems: [],
+      imageState: createInlineImageState(),
+      textPrintImages
+    });
     await printTextBlock(printer, text, warnings, {
       config,
       prefix: config.messageCommandPrefix,
       imageItems,
-      imageState
+      imageState,
+      textPrintImages
     });
 
     if (config.printUrlQr && urls.length > 0) {
@@ -1391,8 +1509,8 @@ async function printForwardedSnapshots(printer, message, config, warnings) {
       }
     }
 
-    await printImageItems(printer, remainingImageItems(imageItems, imageState), config, warnings);
-    await printStickers(printer, snapshot, config, warnings);
+    await printImageItems(printer, remainingImageItems(imageItems, imageState), config, warnings, { textPrintImages });
+    await printStickers(printer, snapshot, config, warnings, textPrintImages);
     printer.feed(1);
   }
 }
@@ -2035,8 +2153,7 @@ function resolveTextImageFont(config = {}) {
   const requestedPath = config.textImageFontPath || process.env.TEXT_IMAGE_FONT_PATH || '';
   return resolveEmbeddedFont([
     { path: requestedPath, family: configuredFamily },
-    { path: '/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
-    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans CJK JP' },
+    { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', family: 'Noto Sans Mono CJK JP' },
     { path: '/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf', family: 'Noto Sans CJK JP' },
     { path: 'C:/Windows/Fonts/msyh.ttc', family: 'Microsoft YaHei' },
     { path: 'C:/Windows/Fonts/YuGothR.ttc', family: 'Yu Gothic' }

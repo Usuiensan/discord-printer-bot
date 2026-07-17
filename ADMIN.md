@@ -69,7 +69,7 @@ Get-Printer | Select-Object Name
 - `PRINT_WIDTH_DOTS`: 印字幅。TM-T70II 58mm は通常 `384`
 - `CUT_MODE`: `none`、`partial`、`partial3`、`full`。通常は `partial` 推奨
 - `CUT_FEED_LINES`: `!cut`とReceiptLineの途中カット前後に送る行数。既定値は`3`
-- `TEXT_IMAGE_FONT_PATH`: CP932外文字を画像化する等幅フォント。Debianでは`NotoSansMonoCJK-Regular.ttc`を推奨
+- `TEXT_IMAGE_FONT_PATH`: CP932外文字を画像化する等幅フォント。Debianでは`NotoSansCJK-Regular.ttc`内の`Noto Sans Mono CJK JP`を使用
 - `TEXT_IMAGE_FONT_SIZE_DOTS` / `TEXT_IMAGE_LINE_HEIGHT_DOTS`: 文字画像の字面サイズと行高。既定値は`28` / `30`
 - `TEXT_IMAGE_DITHER_MODE` / `TEXT_IMAGE_THRESHOLD`: 文字画像専用の2値化設定。既定値は`threshold` / `170`
 - `PRINT_HEADER`: Discordヘッダーを印刷するか
