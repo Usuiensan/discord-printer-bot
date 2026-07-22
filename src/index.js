@@ -4,6 +4,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { buildMemberJoinPrintJob, buildPreviewImage, buildPrintJob } from './discordContent.js';
+import {
+  buildThinkingText,
+  chatWithOllama,
+  extractMentionPrompt,
+  formatElapsed,
+  splitDiscordText,
+  trimChatHistory
+} from './localLlm.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +36,8 @@ let lastPrinterProblemKey = '';
 let hasSeenPrinterProblem = false;
 let printerMonitorRunning = false;
 let latestPrinterProblems = [];
+const aiChatHistories = new Map();
+const aiChatQueues = new Map();
 
 function enqueuePrint(message) {
   enqueuePrintJob(message, 'message', async () => {
@@ -344,6 +354,12 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     // Message commands are checked before normal printing so command messages
     // do not consume print numbers or enter the printer queue.
+    if (isAiChatMention(message)) {
+      await addReaction(message, config.aiThinkingReaction);
+      enqueueAiChat(message);
+      return;
+    }
+
     if (isPreviewMessageCommand(message)) {
       await replyWithPreview(message);
       await addReaction(message, '👀');
@@ -383,6 +399,106 @@ client.on(Events.GuildMemberAdd, (member) => {
 function isWatchedChannelMessage(message) {
   if (message.channelId === config.channelId) return true;
   return message.channel?.isThread?.() && message.channel.parentId === config.channelId;
+}
+
+function isAiChatMention(message) {
+  return config.aiChatEnabled && Boolean(client.user) && message.mentions.has(client.user);
+}
+
+function enqueueAiChat(message) {
+  const conversationKey = `${message.guildId ?? 'dm'}:${message.channelId}`;
+  const previous = aiChatQueues.get(conversationKey) ?? Promise.resolve();
+  const run = previous
+    .catch(() => {})
+    .then(() => handleAiChat(message, conversationKey))
+    .catch(async (error) => {
+      console.error(`AI chat failed for message ${message.id}:`, error);
+      await removeBotReaction(message, config.aiThinkingReaction).catch(() => {});
+      await addReaction(message, config.aiErrorReaction);
+      await replyWithUserMention(message, `ローカルLLMの処理に失敗しました: ${error.message}`);
+    })
+    .finally(() => {
+      if (aiChatQueues.get(conversationKey) === run) aiChatQueues.delete(conversationKey);
+    });
+
+  aiChatQueues.set(conversationKey, run);
+}
+
+async function handleAiChat(message, conversationKey) {
+  const prompt = extractMentionPrompt(message.content, client.user.id);
+  if (!prompt) {
+    throw new Error('メンションの後に質問を書いてください。');
+  }
+
+  const startedAt = Date.now();
+  const history = aiChatHistories.get(conversationKey) ?? [];
+  console.log(`Starting AI chat ${message.id} with model ${config.ollamaModel}`);
+  const result = await chatWithOllama({ prompt, history, config });
+  const elapsedMs = Date.now() - startedAt;
+
+  aiChatHistories.set(conversationKey, trimChatHistory([
+    ...history,
+    { role: 'user', content: prompt },
+    { role: 'assistant', content: result.answer }
+  ], config.aiChatHistoryMessages));
+
+  await sendAiChatAnswer(message, { ...result, prompt, elapsedMs });
+  await removeBotReaction(message, config.aiThinkingReaction).catch((error) => {
+    console.error(`Failed to remove AI thinking reaction from message ${message.id}:`, error);
+  });
+  console.log(`Finished AI chat ${message.id} in ${elapsedMs}ms with model ${result.model}`);
+}
+
+async function sendAiChatAnswer(message, result) {
+  const chunks = splitDiscordText(result.answer, 1500);
+  const thinkingFilename = `thinking-${message.id}.txt`;
+  const thinkingText = buildThinkingText(result);
+  let sentAny = false;
+
+  for (const chunk of chunks.slice(0, -1)) {
+    const content = sentAny ? chunk : `<@${message.author.id}>\n${chunk}`;
+    await sendAiMessagePart(message, content, sentAny);
+    sentAny = true;
+  }
+
+  const attachmentLink = `[詳細な思考過程（テキスト）](attachment://${thinkingFilename})`;
+  const footer = [
+    `思考時間: ${formatElapsed(result.elapsedMs)}`,
+    `LLMモデル: \`${result.model}\``,
+    attachmentLink
+  ].join(' / ');
+  const prefix = sentAny ? '' : `<@${message.author.id}>\n`;
+  const finalContent = `${prefix}${chunks.at(-1)}\n\n${footer}`;
+  const attachment = new AttachmentBuilder(Buffer.from(thinkingText, 'utf8'), { name: thinkingFilename });
+  const sent = await sendAiMessagePart(message, finalContent, sentAny, [attachment]);
+  const uploadedUrl = sent.attachments.first()?.url;
+
+  if (uploadedUrl) {
+    await sent.edit({
+      content: finalContent.replace(`attachment://${thinkingFilename}`, uploadedUrl),
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    });
+  }
+}
+
+function sendAiMessagePart(message, content, sentAny, files = []) {
+  const payload = {
+    content,
+    files,
+    allowedMentions: { users: [message.author.id], repliedUser: false }
+  };
+  return sentAny ? message.channel.send(payload) : message.reply(payload);
+}
+
+async function replyWithUserMention(message, content) {
+  try {
+    await message.reply({
+      content: `<@${message.author.id}> ${content}`,
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    });
+  } catch (error) {
+    console.error(`Failed to reply to message ${message.id}:`, error);
+  }
 }
 
 function isPreviewMessageCommand(message) {

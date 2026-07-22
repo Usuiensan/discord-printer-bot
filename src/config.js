@@ -107,5 +107,15 @@ export const config = {
   rawEscposMaxBytes: intEnv('RAW_ESCPOS_MAX_BYTES', 4096),
   printedReaction: optionalEnv('PRINTED_REACTION', '✅'),
   printNearEndReaction: optionalEnv('PRINT_NEAR_END_REACTION', '🧻'),
-  printErrorReaction: optionalEnv('PRINT_ERROR_REACTION', '⚠️')
+  printErrorReaction: optionalEnv('PRINT_ERROR_REACTION', '⚠️'),
+  aiChatEnabled: boolEnv('AI_CHAT_ENABLED', false),
+  aiThinkingReaction: optionalEnv('AI_THINKING_REACTION', '🤔'),
+  aiErrorReaction: optionalEnv('AI_ERROR_REACTION', '⚠️'),
+  aiChatTimeoutMs: intEnv('AI_CHAT_TIMEOUT_MS', 300000),
+  aiChatHistoryMessages: intEnv('AI_CHAT_HISTORY_MESSAGES', 12),
+  aiSystemPromptFile: optionalEnv('AI_SYSTEM_PROMPT_FILE', ''),
+  ollamaUrl: optionalEnv('OLLAMA_URL', 'http://127.0.0.1:11434'),
+  ollamaModel: optionalEnv('OLLAMA_MODEL', 'qwen3:8b'),
+  ollamaThink: boolEnv('OLLAMA_THINK', true),
+  ollamaKeepAlive: optionalEnv('OLLAMA_KEEP_ALIVE', '10m')
 };

@@ -88,6 +88,13 @@ Get-Printer | Select-Object Name
 - `QR_ERROR_CORRECTION`: QR コードの誤り訂正レベル
 - `BARCODE_HRI`: 1次元バーコードの人間可読テキスト位置。`none`、`above`、`below`、`both`
 - `MESSAGE_COMMAND_PREFIX`: Discord本文コマンドの接頭辞
+- `AI_CHAT_ENABLED`: `true`でBotへのメンションをローカルLLMチャットとして処理する
+- `OLLAMA_URL` / `OLLAMA_MODEL`: Ollama native APIのURLと使用モデル
+- `OLLAMA_THINK`: 対応モデルの詳細思考テキストを取得して回答へ添付するか
+- `AI_CHAT_TIMEOUT_MS`: ローカルLLM回答のタイムアウト。既定は300秒
+- `AI_CHAT_HISTORY_MESSAGES`: チャンネルごとにメモリ保持する会話メッセージ数
+- `AI_THINKING_REACTION` / `AI_ERROR_REACTION`: AI処理中・失敗時のリアクション
+- `AI_SYSTEM_PROMPT_FILE`: 任意のUTF-8システムプロンプトファイル
 - `RAW_ESCPOS_USER_IDS`: raw ESC/POS を許可するDiscordユーザーID。カンマ区切り
 - `RAW_ESCPOS_ADMIN_USER_IDS`: 設定変更系を含むraw ESC/POSも許可するDiscordユーザーID。カンマ区切り
 - `RAW_ESCPOS_MAX_BYTES`: raw ESC/POS の最大バイト数
