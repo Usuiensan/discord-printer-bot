@@ -91,7 +91,9 @@ Get-Printer | Select-Object Name
 - `AI_CHAT_ENABLED`: `true`でBotへのメンションをローカルLLMチャットとして処理する
 - `OLLAMA_URL` / `OLLAMA_MODEL`: Ollama native APIのURLと使用モデル
 - `OLLAMA_THINK`: 対応モデルの詳細思考テキストを取得して回答へ添付するか
-- `AI_CHAT_TIMEOUT_MS`: ローカルLLM回答のタイムアウト。既定は300秒
+- `AI_FAST_TIMEOUT_MS` / `AI_THINK_TIMEOUT_MS`: 高速回答と長時間思考のタイムアウト。既定は300秒 / 1200秒
+- `AI_THINK_PROGRESS_INTERVAL_MS`: 長時間思考のDiscord進捗更新間隔。既定は2500ms
+- `AI_THINK_PROGRESS_MAX_CHARS`: 進捗に表示する直近の思考文字数。既定は800文字
 - `AI_CHAT_HISTORY_MESSAGES`: チャンネルごとにメモリ保持する会話メッセージ数
 - `AI_THINKING_REACTION` / `AI_ERROR_REACTION`: AI処理中・失敗時のリアクション
 - `AI_SYSTEM_PROMPT_FILE`: 任意のUTF-8システムプロンプトファイル

@@ -1,4 +1,14 @@
-import { AttachmentBuilder, Client, Events, GatewayIntentBits, MessageType, Partials } from 'discord.js';
+import {
+  ActionRowBuilder,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageType,
+  Partials
+} from 'discord.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +48,8 @@ let printerMonitorRunning = false;
 let latestPrinterProblems = [];
 const aiChatHistories = new Map();
 const aiChatQueues = new Map();
+const activeAiJobs = new Map();
+const aiDeepRetryContexts = new Map();
 
 function enqueuePrint(message) {
   enqueuePrintJob(message, 'message', async () => {
@@ -388,6 +400,45 @@ client.on(Events.MessageCreate, async (message) => {
   enqueuePrint(message);
 });
 
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton() || !interaction.customId.startsWith('ai:')) return;
+  const [, action, messageId] = interaction.customId.split(':');
+  const activeJob = activeAiJobs.get(messageId);
+  const retryContext = aiDeepRetryContexts.get(messageId);
+  const ownerId = activeJob?.message.author.id ?? retryContext?.userId;
+
+  if (!ownerId) {
+    await interaction.reply({ content: 'このAI操作は期限切れです。', ephemeral: true });
+    return;
+  }
+  if (interaction.user.id !== ownerId) {
+    await interaction.reply({ content: 'このボタンは質問者だけが操作できます。', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  if (action === 'cancel' && activeJob) {
+    activeJob.cancelled = true;
+    activeJob.controller.abort();
+    return;
+  }
+  if (action === 'fast' && activeJob) {
+    activeJob.nextMode = 'fast';
+    activeJob.controller.abort();
+    return;
+  }
+  if (action === 'think' && retryContext) {
+    aiDeepRetryContexts.delete(messageId);
+    await interaction.message.edit({ components: [] }).catch(() => {});
+    await addReaction(retryContext.message, config.aiThinkingReaction);
+    enqueueAiChat(retryContext.message, {
+      mode: 'think',
+      prompt: retryContext.prompt,
+      history: retryContext.history
+    });
+  }
+});
+
 client.on(Events.GuildMemberAdd, (member) => {
   if (!config.memberJoinPrintEnabled) return;
   if (config.guildId && member.guild.id !== config.guildId) return;
@@ -405,17 +456,45 @@ function isAiChatMention(message) {
   return config.aiChatEnabled && Boolean(client.user) && message.mentions.has(client.user);
 }
 
-function enqueueAiChat(message) {
+function enqueueAiChat(message, options = {}) {
   const conversationKey = `${message.guildId ?? 'dm'}:${message.channelId}`;
   const previous = aiChatQueues.get(conversationKey) ?? Promise.resolve();
   const run = previous
     .catch(() => {})
-    .then(() => handleAiChat(message, conversationKey))
+    .then(() => handleAiChat(message, conversationKey, options))
     .catch(async (error) => {
+      const activeJob = activeAiJobs.get(message.id);
+      activeAiJobs.delete(message.id);
+      if (error.code === 'AI_CHAT_ABORTED' && activeJob?.nextMode === 'fast') {
+        enqueueAiChat(message, {
+          mode: 'fast',
+          prompt: activeJob.prompt,
+          history: activeJob.history,
+          progressMessage: activeJob.progressMessage
+        });
+        return;
+      }
+      if (error.code === 'AI_CHAT_ABORTED' && activeJob?.cancelled) {
+        await activeJob.progressMessage?.edit({
+          content: `<@${message.author.id}> ⏹ AIチャットを中止しました。`,
+          components: [],
+          allowedMentions: { users: [message.author.id], repliedUser: false }
+        }).catch(() => {});
+        await removeBotReaction(message, config.aiThinkingReaction).catch(() => {});
+        return;
+      }
       console.error(`AI chat failed for message ${message.id}:`, error);
       await removeBotReaction(message, config.aiThinkingReaction).catch(() => {});
       await addReaction(message, config.aiErrorReaction);
-      await replyWithUserMention(message, `ローカルLLMの処理に失敗しました: ${error.message}`);
+      if (activeJob?.progressMessage) {
+        await activeJob.progressMessage.edit({
+          content: `<@${message.author.id}> ローカルLLMの処理に失敗しました: ${error.message}`,
+          components: [],
+          allowedMentions: { users: [message.author.id], repliedUser: false }
+        }).catch(() => {});
+      } else {
+        await replyWithUserMention(message, `ローカルLLMの処理に失敗しました: ${error.message}`);
+      }
     })
     .finally(() => {
       if (aiChatQueues.get(conversationKey) === run) aiChatQueues.delete(conversationKey);
@@ -424,17 +503,52 @@ function enqueueAiChat(message) {
   aiChatQueues.set(conversationKey, run);
 }
 
-async function handleAiChat(message, conversationKey) {
-  const prompt = extractMentionPrompt(message.content, client.user.id);
+async function handleAiChat(message, conversationKey, options) {
+  const request = parseAiChatRequest(message, options);
+  const { mode, prompt } = request;
   if (!prompt) {
     throw new Error('メンションの後に質問を書いてください。');
   }
 
   const startedAt = Date.now();
-  const history = aiChatHistories.get(conversationKey) ?? [];
-  console.log(`Starting AI chat ${message.id} with model ${config.ollamaModel}`);
-  const result = await chatWithOllama({ prompt, history, config });
+  const history = options.history ?? aiChatHistories.get(conversationKey) ?? [];
+  const controller = new AbortController();
+  const progressMessage = mode === 'think'
+    ? await createOrResetAiProgressMessage(message, options.progressMessage, startedAt)
+    : options.progressMessage;
+  if (mode === 'fast' && progressMessage) {
+    await progressMessage.edit({
+      content: `<@${message.author.id}> ⚡ 高速回答に切り替えました…`,
+      components: [],
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    });
+  }
+  const activeJob = { controller, message, mode, prompt, history, progressMessage };
+  activeAiJobs.set(message.id, activeJob);
+
+  console.log(`Starting AI chat ${message.id} mode=${mode} model=${config.ollamaModel}`);
+  const progressUpdater = mode === 'think'
+    ? createAiProgressUpdater(message, progressMessage, startedAt)
+    : null;
+  let result;
+  try {
+    result = await chatWithOllama({
+      prompt,
+      history,
+      config: {
+        ...config,
+        aiChatTimeoutMs: mode === 'think' ? config.aiThinkTimeoutMs : config.aiFastTimeoutMs
+      },
+      think: mode === 'think',
+      stream: mode === 'think',
+      signal: controller.signal,
+      onProgress: progressUpdater?.update
+    });
+  } finally {
+    await progressUpdater?.stop();
+  }
   const elapsedMs = Date.now() - startedAt;
+  activeAiJobs.delete(message.id);
 
   aiChatHistories.set(conversationKey, trimChatHistory([
     ...history,
@@ -442,18 +556,114 @@ async function handleAiChat(message, conversationKey) {
     { role: 'assistant', content: result.answer }
   ], config.aiChatHistoryMessages));
 
-  await sendAiChatAnswer(message, { ...result, prompt, elapsedMs });
+  if (mode === 'fast') {
+    aiDeepRetryContexts.set(message.id, { message, prompt, history, userId: message.author.id });
+  } else {
+    aiDeepRetryContexts.delete(message.id);
+  }
+  await sendAiChatAnswer(message, { ...result, prompt, elapsedMs, mode }, progressMessage);
   await removeBotReaction(message, config.aiThinkingReaction).catch((error) => {
     console.error(`Failed to remove AI thinking reaction from message ${message.id}:`, error);
   });
-  console.log(`Finished AI chat ${message.id} in ${elapsedMs}ms with model ${result.model}`);
+  console.log(`Finished AI chat ${message.id} mode=${mode} in ${elapsedMs}ms with model ${result.model}`);
 }
 
-async function sendAiChatAnswer(message, result) {
+function parseAiChatRequest(message, options) {
+  if (options.prompt) return { mode: options.mode ?? 'fast', prompt: options.prompt };
+  const rawPrompt = extractMentionPrompt(message.content, client.user.id);
+  const match = rawPrompt.match(/^\/(think|fast)\b\s*/i);
+  return {
+    mode: options.mode ?? (match?.[1]?.toLowerCase() === 'think' ? 'think' : 'fast'),
+    prompt: match ? rawPrompt.slice(match[0].length).trim() : rawPrompt
+  };
+}
+
+async function createOrResetAiProgressMessage(message, existing, startedAt) {
+  const payload = {
+    content: buildAiProgressContent(message.author.id, '', startedAt),
+    components: buildAiProgressComponents(message.id),
+    allowedMentions: { users: [message.author.id], repliedUser: false }
+  };
+  if (existing) {
+    await existing.edit(payload);
+    return existing;
+  }
+  return message.reply(payload);
+}
+
+function createAiProgressUpdater(message, progressMessage, startedAt) {
+  let lastUpdatedAt = 0;
+  let stopped = false;
+  let pendingEdit = Promise.resolve();
+  const update = ({ thinking }) => {
+    const now = Date.now();
+    if (stopped || !thinking || now - lastUpdatedAt < config.aiThinkProgressIntervalMs) return;
+    lastUpdatedAt = now;
+    pendingEdit = pendingEdit.then(() => progressMessage.edit({
+        content: buildAiProgressContent(message.author.id, thinking, startedAt),
+        components: buildAiProgressComponents(message.id),
+        allowedMentions: { users: [message.author.id], repliedUser: false }
+      }))
+      .catch((error) => console.error(`Failed to update AI progress ${message.id}:`, error));
+  };
+  return {
+    update,
+    async stop() {
+      stopped = true;
+      await pendingEdit;
+    }
+  };
+}
+
+function buildAiProgressContent(userId, thinking, startedAt) {
+  const elapsed = formatElapsed(Date.now() - startedAt);
+  if (!thinking) return `<@${userId}> 🧠 じっくり考えています… ${elapsed}`;
+  const tail = thinking
+    .slice(-config.aiThinkProgressMaxChars)
+    .replace(/```/g, "'''")
+    .trim();
+  return `<@${userId}> 🧠 じっくり考えています… ${elapsed}\n\n現在の検討:\n\`\`\`text\n${tail}\n\`\`\``;
+}
+
+function buildAiProgressComponents(messageId) {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ai:cancel:${messageId}`)
+      .setLabel('中止')
+      .setEmoji('⏹️')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`ai:fast:${messageId}`)
+      .setLabel('高速回答に切替')
+      .setEmoji('⚡')
+      .setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+function buildAiFinalComponents(messageId, mode) {
+  if (mode !== 'fast') return [];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ai:think:${messageId}`)
+      .setLabel('深く考え直す')
+      .setEmoji('🧠')
+      .setStyle(ButtonStyle.Primary)
+  )];
+}
+
+async function sendAiChatAnswer(message, result, progressMessage) {
   const chunks = splitDiscordText(result.answer, 1500);
   const thinkingFilename = `thinking-${message.id}.txt`;
   const thinkingText = buildThinkingText(result);
-  let sentAny = false;
+  let sentAny = Boolean(progressMessage);
+
+  if (progressMessage && chunks.length > 1) {
+    await progressMessage.edit({
+      content: `<@${message.author.id}>\n${chunks.shift()}`,
+      components: [],
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    });
+  }
 
   for (const chunk of chunks.slice(0, -1)) {
     const content = sentAny ? chunk : `<@${message.author.id}>\n${chunk}`;
@@ -470,21 +680,31 @@ async function sendAiChatAnswer(message, result) {
   const prefix = sentAny ? '' : `<@${message.author.id}>\n`;
   const finalContent = `${prefix}${chunks.at(-1)}\n\n${footer}`;
   const attachment = new AttachmentBuilder(Buffer.from(thinkingText, 'utf8'), { name: thinkingFilename });
-  const sent = await sendAiMessagePart(message, finalContent, sentAny, [attachment]);
+  const components = buildAiFinalComponents(message.id, result.mode);
+  const sent = progressMessage && chunks.length === 1
+    ? await progressMessage.edit({
+      content: finalContent,
+      files: [attachment],
+      components,
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    })
+    : await sendAiMessagePart(message, finalContent, sentAny, [attachment], components);
   const uploadedUrl = sent.attachments.first()?.url;
 
   if (uploadedUrl) {
     await sent.edit({
       content: finalContent.replace(`attachment://${thinkingFilename}`, uploadedUrl),
+      components,
       allowedMentions: { users: [message.author.id], repliedUser: false }
     });
   }
 }
 
-function sendAiMessagePart(message, content, sentAny, files = []) {
+function sendAiMessagePart(message, content, sentAny, files = [], components = []) {
   const payload = {
     content,
     files,
+    components,
     allowedMentions: { users: [message.author.id], repliedUser: false }
   };
   return sentAny ? message.channel.send(payload) : message.reply(payload);

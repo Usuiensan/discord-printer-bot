@@ -59,6 +59,46 @@ test('chatWithOllama reports an Ollama HTTP error', async () => {
   );
 });
 
+test('chatWithOllama combines streamed thinking and answer chunks', async () => {
+  const chunks = [
+    { model: 'test-model', message: { thinking: '検討1', content: '' }, done: false },
+    { model: 'test-model', message: { thinking: '、検討2', content: '' }, done: false },
+    { model: 'test-model', message: { thinking: '', content: '回' }, done: false },
+    { model: 'test-model', message: { thinking: '', content: '答' }, done: true, total_duration: 456 }
+  ];
+  const progress = [];
+  const result = await chatWithOllama({
+    prompt: '質問',
+    config,
+    think: true,
+    stream: true,
+    onProgress: (value) => progress.push(value),
+    fetchImpl: async () => new Response(`${chunks.map((chunk) => JSON.stringify(chunk)).join('\n')}\n`)
+  });
+
+  assert.equal(result.thinking, '検討1、検討2');
+  assert.equal(result.answer, '回答');
+  assert.equal(result.totalDurationNs, 456);
+  assert.equal(progress.at(-1).answer, '回答');
+});
+
+test('chatWithOllama identifies cancellation from an external signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    chatWithOllama({
+      prompt: '質問',
+      config,
+      signal: controller.signal,
+      fetchImpl: async (_url, options) => {
+        if (options.signal.aborted) throw new DOMException('aborted', 'AbortError');
+        return new Response('{}');
+      }
+    }),
+    (error) => error.code === 'AI_CHAT_ABORTED'
+  );
+});
+
 test('splitDiscordText preserves all text across Discord-sized chunks', () => {
   const source = `${'あ'.repeat(20)}\n${'い'.repeat(20)}`;
   const chunks = splitDiscordText(source, 25);

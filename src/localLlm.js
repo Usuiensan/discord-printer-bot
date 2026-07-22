@@ -23,8 +23,20 @@ export function extractMentionPrompt(content, botUserId) {
   return String(content ?? '').replace(mentionPattern, '').trim();
 }
 
-export async function chatWithOllama({ prompt, history = [], config, fetchImpl = fetch }) {
+export async function chatWithOllama({
+  prompt,
+  history = [],
+  config,
+  fetchImpl = fetch,
+  think = config.ollamaThink,
+  stream = false,
+  signal,
+  onProgress
+}) {
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal?.reason);
+  if (signal?.aborted) controller.abort(signal.reason);
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), config.aiChatTimeoutMs);
 
   try {
@@ -41,8 +53,8 @@ export async function chatWithOllama({ prompt, history = [], config, fetchImpl =
       body: JSON.stringify({
         model: config.ollamaModel,
         messages,
-        stream: false,
-        think: config.ollamaThink,
+        stream,
+        think,
         keep_alive: config.ollamaKeepAlive
       }),
       signal: controller.signal
@@ -53,7 +65,9 @@ export async function chatWithOllama({ prompt, history = [], config, fetchImpl =
       throw new Error(`Ollama API ${response.status}: ${detail || response.statusText}`);
     }
 
-    const body = await response.json();
+    const body = stream
+      ? await readOllamaStream(response, onProgress)
+      : await response.json();
     const answer = String(body?.message?.content ?? '').trim();
     if (!answer) throw new Error('Ollamaから回答本文が返りませんでした。');
 
@@ -65,12 +79,54 @@ export async function chatWithOllama({ prompt, history = [], config, fetchImpl =
     };
   } catch (error) {
     if (error?.name === 'AbortError') {
+      if (signal?.aborted) {
+        const aborted = new Error('AIチャットが中断されました。');
+        aborted.code = 'AI_CHAT_ABORTED';
+        throw aborted;
+      }
       throw new Error(`ローカルLLMがタイムアウトしました（${Math.ceil(config.aiChatTimeoutMs / 1000)}秒）。`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
+}
+
+async function readOllamaStream(response, onProgress) {
+  if (!response.body) throw new Error('Ollamaからストリーム本文が返りませんでした。');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let answer = '';
+  let thinking = '';
+  let finalChunk = {};
+
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    const chunk = JSON.parse(line);
+    if (chunk.error) throw new Error(`Ollama API: ${chunk.error}`);
+    answer += String(chunk?.message?.content ?? '');
+    thinking += String(chunk?.message?.thinking ?? '');
+    finalChunk = chunk;
+    onProgress?.({ answer, thinking });
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffered += decoder.decode(value, { stream: !done });
+    const lines = buffered.split(/\r?\n/);
+    buffered = lines.pop() ?? '';
+    for (const line of lines) consumeLine(line);
+    if (done) break;
+  }
+  consumeLine(buffered);
+
+  return {
+    ...finalChunk,
+    message: { content: answer, thinking }
+  };
 }
 
 export function trimChatHistory(history, maxMessages) {
