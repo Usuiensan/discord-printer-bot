@@ -103,7 +103,9 @@ async function collectJobUnsupportedCharacters(message, primaryText, primaryImag
 }
 
 export function unsupportedPrinterCharacters(text) {
-  return [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.map((item) => item.from))];
+  return [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements
+    .filter((item) => !isEquivalentPrinterReplacement(item))
+    .map((item) => item.from))];
 }
 
 export function imageModeWarning(chars) {
@@ -178,7 +180,16 @@ export async function appendDiscordHeader(printer, message, config, options = {}
 
 export async function buildPreviewText(message, config) {
   const rows = await buildPreviewRows(message, config);
-  return rows.map((line) => line.text).join('\n') || '[印刷できる本文がありません]';
+  return rows.flatMap(previewRowText).join('\n') || '[印刷できる本文がありません]';
+}
+
+function previewRowText(line) {
+  if (!line.segments?.length) return [line.text];
+  const left = line.segments.find((segment) => segment.align === 'left')?.text ?? '';
+  const right = line.segments.find((segment) => segment.align === 'right')?.text ?? '';
+  const baseColumns = line.small ? 42 : 32;
+  const columns = Math.max(1, Math.floor(baseColumns / Math.max(1, line.sizeX ?? 1)));
+  return formatReceiptRow(left, right, columns);
 }
 
 async function buildPreviewRows(message, config) {
@@ -1336,7 +1347,8 @@ export function shouldRenderTextAsImage(text, config = {}) {
   const mode = config.textRenderMode || process.env.TEXT_RENDER_MODE || 'auto';
   if (mode === 'image') return Boolean(stripDiscordStyleMarkers(text));
   if (mode === 'text') return false;
-  return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.length > 0;
+  return normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements
+    .some((replacement) => !isEquivalentPrinterReplacement(replacement));
 }
 
 async function printRasterTextLine(printer, line, warnings, config = {}, sourceText = line.text, rasterBatch = null) {
@@ -1415,7 +1427,9 @@ async function composeTextPrintImages(images, width = 384) {
 }
 
 function recordImageRenderedChars(text, warnings) {
-  const chars = [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements.map((item) => item.from))];
+  const chars = [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements
+    .filter((item) => !isEquivalentPrinterReplacement(item))
+    .map((item) => item.from))];
   if (chars.length === 0) return;
   const message = `プリンタ文字コード外の文字を画像として印刷しました: ${chars.join(' ')}`;
   if (!warnings.includes(message)) warnings.push(message);
@@ -1537,12 +1551,20 @@ async function hasPrintableMessageContent(message, config) {
 function recordUnsupportedChars(text, warnings) {
   const { replacements } = normalizePrinterTextDetailed(text);
   for (const item of replacements) {
+    if (isEquivalentPrinterReplacement(item)) continue;
     const message = formatReplacementWarning(item.from, item.to);
     if (!warnings.includes(message)) {
       warnings.push(message);
       console.warn(`${message} count=${item.count}`);
     }
   }
+}
+
+function isEquivalentPrinterReplacement(replacement) {
+  // ESC R 8 selects the Japanese international character set, where byte 0x5C
+  // is printed as a yen sign. Encoding U+00A5 as the CP932 backslash byte is
+  // therefore lossless on the target TM-T70II and does not require raster text.
+  return replacement.from === '\u00A5' && replacement.to === '\\';
 }
 
 function formatReplacementWarning(from, to) {
