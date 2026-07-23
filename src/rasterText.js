@@ -21,7 +21,11 @@ export async function renderVerticallyCenteredRaster({
   }
 
   const inkHeight = lastInkRow - firstInkRow + 1;
-  const outputHeight = Math.max(lineHeight, inkHeight);
+  // Keep a small white guard on both sides of the glyph. Some Japanese
+  // glyphs reach the measured ink boundary, and a zero-dot edge margin can
+  // lose the final raster rows when the printer advances to the next line.
+  const verticalSafetyPadding = 2;
+  const outputHeight = Math.max(lineHeight, inkHeight + verticalSafetyPadding * 2);
   const topPadding = Math.floor((outputHeight - inkHeight) / 2);
   const output = Buffer.alloc(width * outputHeight, 0xff);
 

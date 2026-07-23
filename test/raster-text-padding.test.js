@@ -35,6 +35,12 @@ test('ReceiptLine raster text has balanced top and bottom whitespace', async () 
   await assertBalancedVerticalPadding(printImages[0], 1);
 });
 
+test('note raster text keeps guard dots below Japanese glyphs', async () => {
+  const { printImages } = await buildPrintJob(message('!note 60\n本文テスト'), config, { printHeader: false });
+  assert.equal(printImages.length, 1);
+  await assertBalancedVerticalPadding(printImages[0], 2, 2);
+});
+
 function message(content) {
   return {
     content,
@@ -51,7 +57,7 @@ function message(content) {
   };
 }
 
-async function assertBalancedVerticalPadding(image, tolerance) {
+async function assertBalancedVerticalPadding(image, tolerance, minimumPadding = 0) {
   const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
   let firstInkRow = -1;
   let lastInkRow = -1;
@@ -66,6 +72,10 @@ async function assertBalancedVerticalPadding(image, tolerance) {
   assert.notEqual(firstInkRow, -1);
   const topPadding = firstInkRow;
   const bottomPadding = info.height - lastInkRow - 1;
+  assert.ok(
+    topPadding >= minimumPadding && bottomPadding >= minimumPadding,
+    `expected at least ${minimumPadding} dots of padding, got top=${topPadding}, bottom=${bottomPadding}`
+  );
   assert.ok(
     Math.abs(topPadding - bottomPadding) <= tolerance,
     `expected balanced padding, got top=${topPadding}, bottom=${bottomPadding}`
