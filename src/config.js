@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { resolveDiscordChannelIds } from './channelConfig.js';
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -46,6 +47,17 @@ function listEnv(name) {
     .filter(Boolean);
 }
 
+function discordChannelIdsEnv() {
+  const uniqueIds = resolveDiscordChannelIds(
+    process.env.DISCORD_CHANNEL_IDS,
+    process.env.DISCORD_CHANNEL_ID
+  );
+  if (uniqueIds.length === 0) {
+    throw new Error('Missing required environment variable: DISCORD_CHANNEL_IDS or DISCORD_CHANNEL_ID');
+  }
+  return uniqueIds;
+}
+
 const urlQrMode = process.env.URL_QR_MODE?.trim()
   ? enumEnv('URL_QR_MODE', 'manual', ['manual', 'auto'])
   : (boolEnv('PRINT_URL_QR', false) ? 'auto' : 'manual');
@@ -53,11 +65,14 @@ const urlQrMode = process.env.URL_QR_MODE?.trim()
 const printerBackend = process.env.PRINTER_BACKEND?.trim()
   ? enumEnv('PRINTER_BACKEND', 'windows', ['windows', 'bridge', 'linux-usb'])
   : (optionalEnv('PRINT_BRIDGE_URL', '') ? 'bridge' : 'windows');
+const discordChannelIds = discordChannelIdsEnv();
 
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   guildId: optionalEnv('DISCORD_GUILD_ID', ''),
-  channelId: requireEnv('DISCORD_CHANNEL_ID'),
+  channelId: discordChannelIds[0],
+  channelIds: discordChannelIds,
+  printerMonitorChannelId: optionalEnv('PRINTER_MONITOR_CHANNEL_ID', discordChannelIds[0]),
   printerName: printerBackend === 'linux-usb' ? optionalEnv('PRINTER_NAME', '') : requireEnv('PRINTER_NAME'),
   printerBackend,
   printBridgeUrl: optionalEnv('PRINT_BRIDGE_URL', ''),

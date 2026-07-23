@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { EscPosBuilder, normalizePrinterTextDetailed } from './escpos.js';
 import { appendReceiptLine, extractReceiptLineMessage, renderReceiptLinePreview } from './receiptLineContent.js';
 import { appendSymbolItems, extractSymbolMessageCommands, formatSymbolPreviewLines } from './symbolContent.js';
+import { renderVerticallyCenteredRaster } from './rasterText.js';
 import { wrapUnicodeText } from './textLayout.js';
 
 const CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]+):(\d+)>/g;
@@ -14,6 +15,11 @@ const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
 const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0000$/;
 
 export async function buildPrintJob(message, config, options = {}) {
+  const noteCommand = parseNoteMessageCommand(message.content ?? '', config.messageCommandPrefix);
+  if (noteCommand) {
+    return buildNotePrintJob(noteCommand, config);
+  }
+
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
   const warnings = [];
   const textPrintImages = [];
@@ -84,6 +90,125 @@ export async function buildPrintJob(message, config, options = {}) {
     warnings,
     printImages: await composeTextPrintImages(textPrintImages, config.printWidthDots),
   };
+}
+
+export function parseNoteMessageCommand(content, prefix = '!') {
+  const escapedPrefix = escapeRegex(String(prefix || '!'));
+  const pattern = new RegExp(
+    `^${escapedPrefix}(note90|note)\\s+(\\d+)(?:[ \\t]*\\r?\\n|[ \\t]+)([\\s\\S]+)$`,
+    'i'
+  );
+  const match = String(content ?? '').trimStart().match(pattern);
+  if (!match) return null;
+
+  const widthDots = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(widthDots) || widthDots < 1 || widthDots > 4096) {
+    throw new Error(`${prefix}${match[1]} の幅は1～4096dotsで指定してください`);
+  }
+
+  const text = match[3].replace(/\s+$/g, '');
+  if (!text.trim()) {
+    throw new Error(`${prefix}${match[1]} の次の行に印刷する文章を書いてください`);
+  }
+
+  return {
+    rotate90: match[1].toLowerCase() === 'note90',
+    widthDots,
+    text
+  };
+}
+
+async function buildNotePrintJob(noteCommand, config) {
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const printImages = await buildNoteRasterImages(noteCommand, config);
+
+  for (const image of printImages) {
+    await printer.image(image, {
+      maxWidth: config.printWidthDots,
+      dither: config.textImageDitherMode ?? 'threshold',
+      threshold: config.textImageThreshold ?? 170
+    });
+  }
+  printer.cut(config.cutMode);
+
+  return {
+    bytes: printer.build(),
+    warnings: [],
+    printImages,
+    usesPrintNumber: false,
+    updatesMergeState: false
+  };
+}
+
+export async function buildNoteRasterImages(noteCommand, config) {
+  const printWidth = config.printWidthDots ?? 384;
+  const contentWidth = noteCommand.rotate90
+    ? noteCommand.widthDots
+    : Math.min(noteCommand.widthDots, printWidth);
+  const lineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
+  const printableText = notePrintableText(noteCommand.text);
+  const wrappedLines = printableText.split(/\r?\n/).flatMap((line) => (
+    wrapUnicodeText(line, contentWidth, noteTextWidthDots)
+  ));
+  const lineImages = [];
+
+  for (const text of wrappedLines) {
+    const line = {
+      ...previewLine(text),
+      raster: true,
+      rasterFontSize: config.textImageFontSizeDots ?? 28,
+      printWidthDots: contentWidth
+    };
+    lineImages.push(await renderRasterTextLineImage(line, config, contentWidth, lineHeight));
+  }
+
+  if (!noteCommand.rotate90) {
+    return [await combineRasterImages(lineImages, contentWidth)];
+  }
+
+  return rotateNoteLineGroups(lineImages, contentWidth, printWidth);
+}
+
+function notePrintableText(value) {
+  return formatDiscordMarkdownForPrint(value)
+    .replace(/\u0000HEADING\d+\u0000/g, '')
+    .replace(/\u0000SMALL\u0000/g, '')
+    .split(/\r?\n/)
+    .map((line) => stripDiscordStyleMarkers(line))
+    .join('\n');
+}
+
+function noteTextWidthDots(value) {
+  return displayColumns(stripDiscordStyleMarkers(value)) * 12;
+}
+
+async function rotateNoteLineGroups(lineImages, logicalWidth, printWidth) {
+  const groups = [];
+  let current = [];
+  let currentHeight = 0;
+
+  for (const image of lineImages) {
+    const metadata = await sharp(image).metadata();
+    const height = metadata.height ?? 0;
+    if (height > printWidth) {
+      throw new Error(`1行の高さ${height}dotsが印字可能幅${printWidth}dotsを超えています`);
+    }
+    if (current.length > 0 && currentHeight + height > printWidth) {
+      groups.push(current);
+      current = [];
+      currentHeight = 0;
+    }
+    current.push(image);
+    currentHeight += height;
+  }
+  if (current.length > 0) groups.push(current);
+
+  const rotated = [];
+  for (const group of groups) {
+    const logicalImage = await combineRasterImages(group, logicalWidth);
+    rotated.push(await sharp(logicalImage).rotate(90, { background: '#ffffff' }).png().toBuffer());
+  }
+  return rotated;
 }
 
 function imageModeConfig(config, unsupportedChars) {
@@ -233,6 +358,13 @@ async function buildPreviewRows(message, config) {
 }
 
 export async function buildPreviewImage(message, config) {
+  const previewContent = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
+  const noteCommand = parseNoteMessageCommand(previewContent, config.messageCommandPrefix);
+  if (noteCommand) {
+    const images = await buildNoteRasterImages(noteCommand, config);
+    return stackImagesCentered(images, config.printWidthDots ?? 384);
+  }
+
   const lines = await buildPreviewRows(message, config);
   const padding = 16;
   const baseLineHeight = 24;
@@ -1364,23 +1496,7 @@ async function printRasterTextLine(printer, line, warnings, config = {}, sourceT
       ? Math.round((config.textImageFontSizeDots ?? 28) * 17 / 24)
       : (config.textImageFontSizeDots ?? 28)
   };
-  const font = resolveTextImageFont(config);
-  const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.2));
-  const elements = layoutPreviewTextElements(rasterLine, {
-    width,
-    padding: 0,
-    y: baselineY,
-    fontFamily: font.family,
-    fitGlyphs: true
-  });
-  const svg = Buffer.from(`
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}" viewBox="0 0 ${width} ${lineHeight}">
-  <style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style>
-  <rect width="100%" height="100%" fill="white"/>
-  ${elements}
-</svg>`);
-  const threshold = config.textImageThreshold ?? 170;
-  const png = await sharp(svg).grayscale().threshold(threshold).png().toBuffer();
+  const png = await renderRasterTextLineImage(rasterLine, config, width, lineHeight);
   if (rasterBatch) {
     rasterBatch.images.push(png);
     if (config.textRenderMode !== 'image') recordImageRenderedChars(sourceText, warnings);
@@ -1389,10 +1505,38 @@ async function printRasterTextLine(printer, line, warnings, config = {}, sourceT
   await printer.image(png, {
     maxWidth: width,
     dither: config.textImageDitherMode ?? 'threshold',
-    threshold
+    threshold: config.textImageThreshold ?? 170
   });
   printer.align(line.align ?? 'left');
   recordImageRenderedChars(sourceText, warnings);
+}
+
+async function renderRasterTextLineImage(rasterLine, config, width, lineHeight) {
+  const font = resolveTextImageFont(config);
+  const threshold = config.textImageThreshold ?? 170;
+  const fontSize = previewFontSize(rasterLine);
+  const png = await renderVerticallyCenteredRaster({
+    width,
+    lineHeight,
+    fontSize,
+    threshold,
+    buildSvg: (sourceHeight, baselineY) => {
+      const elements = layoutPreviewTextElements(rasterLine, {
+        width,
+        padding: 0,
+        y: baselineY,
+        fontFamily: font.family,
+        fitGlyphs: true
+      });
+      return Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sourceHeight}" viewBox="0 0 ${width} ${sourceHeight}">
+  <style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style>
+  <rect width="100%" height="100%" fill="white"/>
+  ${elements}
+</svg>`);
+    }
+  });
+  return png;
 }
 
 async function flushRasterBatch(printer, rasterBatch, config = {}) {
@@ -1413,6 +1557,25 @@ async function combineRasterImages(images, width) {
   let top = 0;
   const composites = images.map((input, index) => {
     const item = { input, left: 0, top };
+    top += metadata[index].height ?? 0;
+    return item;
+  });
+  return sharp({
+    create: { width, height: Math.max(1, height), channels: 3, background: '#ffffff' }
+  }).composite(composites).png().toBuffer();
+}
+
+async function stackImagesCentered(images, width) {
+  const metadata = await Promise.all(images.map((image) => sharp(image).metadata()));
+  const height = metadata.reduce((sum, item) => sum + (item.height ?? 0), 0);
+  let top = 0;
+  const composites = images.map((input, index) => {
+    const imageWidth = metadata[index].width ?? width;
+    const item = {
+      input,
+      left: Math.max(0, Math.floor((width - imageWidth) / 2)),
+      top
+    };
     top += metadata[index].height ?? 0;
     return item;
   });
@@ -1678,15 +1841,23 @@ function printTextHeader(printer, message, warnings, printNumber) {
   if (numberText) printTextLine(printer, numberText, warnings);
 }
 
-async function buildAuthorHeaderImage(message, config, printNumber) {
+export async function buildAuthorHeaderImage(message, config, printNumber) {
   const avatarSize = Math.min(config.authorAvatarWidthDots ?? 96, 128);
   const padding = 8;
   const gap = 10;
   const width = config.printWidthDots;
-  const height = Math.max(avatarSize + padding * 2, 124);
   const textX = padding + avatarSize + gap;
   const textWidth = width - textX - padding;
-  const name = escapeXml(truncateText(displayName(message), 24));
+  const nameLines = wrapHeaderDisplayName(displayName(message), textWidth);
+  const nameLineHeight = 34;
+  const nameElements = nameLines.map((line, index) => (
+    `<text class="name" x="${textX}" y="${padding + 30 + index * nameLineHeight}">${escapeXml(line)}</text>`
+  )).join('\n');
+  const metaStartY = padding + nameLines.length * nameLineHeight;
+  const dateY = metaStartY + 24;
+  const timeY = dateY + 26;
+  const numberY = timeY + 36;
+  const height = Math.max(avatarSize + padding * 2, numberY + padding);
   const numberText = escapeXml(formatPrintNumber(printNumber));
   const time = formatMessageTimeParts(message.createdAt);
   const dateText = escapeXml(time.date);
@@ -1712,10 +1883,10 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
     .number { font-family: ${font.cssFamily}; font-size: 36px; font-weight: 700; fill: #000; }
   </style>
   <rect width="100%" height="100%" fill="white"/>
-  <text class="name" x="${textX}" y="${padding + 30}">${name}</text>
-  <text class="meta" x="${textX}" y="${padding + 56}">${dateText}</text>
-  <text class="meta" x="${textX}" y="${padding + 80}">${timeText}</text>
-  <text class="number" x="${textX}" y="${padding + 110}">${numberText}</text>
+  ${nameElements}
+  <text class="meta" x="${textX}" y="${dateY}">${dateText}</text>
+  <text class="meta" x="${textX}" y="${timeY}">${timeText}</text>
+  <text class="number" x="${textX}" y="${numberY}">${numberText}</text>
 </svg>`);
 
   const composites = [{ input: svg, left: 0, top: 0 }];
@@ -1734,6 +1905,14 @@ async function buildAuthorHeaderImage(message, config, printNumber) {
     .composite(composites)
     .png()
     .toBuffer();
+}
+
+export function wrapHeaderDisplayName(value, widthDots) {
+  return wrapUnicodeText(
+    String(value ?? ''),
+    Math.max(1, widthDots),
+    (text) => displayColumns(text) * 16
+  );
 }
 
 function resolveSvgFont(config = {}) {
@@ -1805,11 +1984,6 @@ function formatMessageTimeParts(date) {
     date: `${value.year}年${value.month}月${value.day}日（${value.weekday}）`,
     time: `${value.hour}:${value.minute}:${value.second}`,
   };
-}
-
-function truncateText(value, maxLength) {
-  const chars = Array.from(value);
-  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join('')}...` : value;
 }
 
 function escapeXml(value) {

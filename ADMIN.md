@@ -47,7 +47,9 @@ Get-Printer | Select-Object Name
 `.env` を編集します。
 
 - `DISCORD_TOKEN`: Discord bot token
-- `DISCORD_CHANNEL_ID`: 印刷したいチャンネル ID
+- `DISCORD_CHANNEL_IDS`: 印刷したいチャンネルID。複数の場合はカンマ区切り
+- `DISCORD_CHANNEL_ID`: 後方互換用の単一チャンネルID。`DISCORD_CHANNEL_IDS`と併用した場合も監視対象へ追加
+- `PRINTER_MONITOR_CHANNEL_ID`: 紙切れなどのプリンター状態通知先。省略時は最初の監視チャンネル
 - `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
 - `PRINTER_BACKEND`: `windows`、`bridge`、`linux-usb`。Debian CT 単体構成は `linux-usb`
 - `PRINTER_NAME`: Windows のプリンタ名。`PRINTER_BACKEND=linux-usb` では不要

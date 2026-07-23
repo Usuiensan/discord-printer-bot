@@ -70,7 +70,8 @@ sudo usermod -aG lp <botユーザー>
 
 ```env
 DISCORD_TOKEN=Discord bot token
-DISCORD_CHANNEL_ID=印刷対象チャンネルID
+DISCORD_CHANNEL_IDS=印刷対象チャンネルID1,印刷対象チャンネルID2
+PRINTER_MONITOR_CHANNEL_ID=状態通知先チャンネルID
 DISCORD_GUILD_ID=必要ならサーバーID
 
 PRINTER_BACKEND=linux-usb
