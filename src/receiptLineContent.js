@@ -1,6 +1,7 @@
 import { normalizePrinterTextDetailed } from './escpos.js';
 import sharp from 'sharp';
 import { existsSync, readFileSync } from 'node:fs';
+import { renderVerticallyCenteredRaster } from './rasterText.js';
 import { wrapUnicodeText } from './textLayout.js';
 
 const DEFAULT_COLUMNS = 32;
@@ -380,19 +381,25 @@ async function printReceiptLineRaster(printer, text, config, warnings, rasterBat
   const width = config.printWidthDots ?? printer.widthDots ?? 384;
   const fontSize = config.textImageFontSizeDots ?? 28;
   const lineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
-  const baselineY = lineHeight - Math.max(4, Math.round(lineHeight * 0.15));
   const font = resolveReceiptLineFont(config);
-  let x = 0;
-  const elements = Array.from(text).map((char) => {
-    const advance = charWidth(char) * 12;
-    const fit = char.trim() ? ` textLength="${advance}" lengthAdjust="spacingAndGlyphs"` : '';
-    const element = `<text x="${x}" y="${baselineY}" font-size="${fontSize}"${fit} xml:space="preserve">${escapeXml(char)}</text>`;
-    x += advance;
-    return element;
-  }).join('');
-  const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lineHeight}"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
   const threshold = config.textImageThreshold ?? 170;
-  const png = await sharp(svg).grayscale().threshold(threshold).png().toBuffer();
+  const png = await renderVerticallyCenteredRaster({
+    width,
+    lineHeight,
+    fontSize,
+    threshold,
+    buildSvg: (sourceHeight, baselineY) => {
+      let x = 0;
+      const elements = Array.from(text).map((char) => {
+        const advance = charWidth(char) * 12;
+        const fit = char.trim() ? ` textLength="${advance}" lengthAdjust="spacingAndGlyphs"` : '';
+        const element = `<text x="${x}" y="${baselineY}" font-size="${fontSize}"${fit} xml:space="preserve">${escapeXml(char)}</text>`;
+        x += advance;
+        return element;
+      }).join('');
+      return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sourceHeight}"><style>${font.css} text { font-family: ${font.cssFamily}; fill: #000; }</style><rect width="100%" height="100%" fill="white"/>${elements}</svg>`);
+    }
+  });
   if (rasterBatch) {
     rasterBatch.images.push(png);
   } else {

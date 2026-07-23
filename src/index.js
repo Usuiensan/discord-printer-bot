@@ -50,13 +50,14 @@ const aiChatHistories = new Map();
 const aiChatQueues = new Map();
 const activeAiJobs = new Map();
 const aiDeepRetryContexts = new Map();
+const watchedChannelIds = new Set(config.channelIds ?? [config.channelId]);
 
 function enqueuePrint(message) {
   enqueuePrintJob(message, 'message', async () => {
     const omitHeader = shouldOmitHeader(message);
     const printNumber = omitHeader ? null : await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings, printImages } = await buildPrintJob(message, config, {
+    const { bytes, warnings, printImages, usesPrintNumber = true, updatesMergeState = true } = await buildPrintJob(message, config, {
       printHeader: !omitHeader,
       printNumber
     });
@@ -68,13 +69,16 @@ function enqueuePrint(message) {
         await markPrintRetry(message, retry);
       }
     });
-    if (printNumber) {
+    if (printNumber && usesPrintNumber) {
       await commitPrintNumber(printNumber);
     }
-    lastPrintedMessage = {
-      authorId: message.author.id,
-      createdTimestamp: message.createdTimestamp
-    };
+    if (updatesMergeState) {
+      lastPrintedMessage = {
+        authorId: message.author.id,
+        channelId: message.channelId,
+        createdTimestamp: message.createdTimestamp
+      };
+    }
     if (warnings.length > 0) {
       await markPrintWarning(message, warnings, printImages);
       console.log(`Printed message ${message.id} from ${message.author.tag} with ${warnings.length} warning(s)`);
@@ -127,7 +131,7 @@ function enqueueReprint(message, targetMessage) {
     const omitHeader = false;
     const printNumber = await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings, printImages } = await buildPrintJob(targetMessage, config, {
+    const { bytes, warnings, printImages, usesPrintNumber = true, updatesMergeState = true } = await buildPrintJob(targetMessage, config, {
       printHeader: !omitHeader,
       printNumber
     });
@@ -139,11 +143,14 @@ function enqueueReprint(message, targetMessage) {
         await markPrintRetry(message, retry);
       }
     });
-    await commitPrintNumber(printNumber);
-    lastPrintedMessage = {
-      authorId: targetMessage.author.id,
-      createdTimestamp: targetMessage.createdTimestamp
-    };
+    if (usesPrintNumber) await commitPrintNumber(printNumber);
+    if (updatesMergeState) {
+      lastPrintedMessage = {
+        authorId: targetMessage.author.id,
+        channelId: targetMessage.channelId,
+        createdTimestamp: targetMessage.createdTimestamp
+      };
+    }
     if (warnings.length > 0) {
       await markPrintWarning(message, warnings, printImages);
       console.log(`Reprinted message ${targetMessage.id} requested by ${message.author.tag} with ${warnings.length} warning(s)`);
@@ -196,6 +203,7 @@ async function readPrintSequenceState() {
 function shouldOmitHeader(message) {
   if (!lastPrintedMessage) return false;
   if (lastPrintedMessage.authorId !== message.author.id) return false;
+  if (lastPrintedMessage.channelId !== message.channelId) return false;
 
   const delta = message.createdTimestamp - lastPrintedMessage.createdTimestamp;
   return delta >= 0 && delta <= config.mergeSameUserWindowMs;
@@ -336,13 +344,15 @@ async function removeBotReaction(message, emoji) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
-  console.log(`Watching channel ${config.channelId}`);
-  const watchedChannel = await readyClient.channels.fetch(config.channelId).catch((error) => {
-    console.error(`Failed to fetch watched channel ${config.channelId}: ${error.message}`);
-    return null;
-  });
-  if (watchedChannel) {
-    console.log(`Watched channel resolved: ${watchedChannel.name ?? '(no name)'} (${watchedChannel.type})`);
+  console.log(`Watching channels ${[...watchedChannelIds].join(', ')}`);
+  for (const channelId of watchedChannelIds) {
+    const watchedChannel = await readyClient.channels.fetch(channelId).catch((error) => {
+      console.error(`Failed to fetch watched channel ${channelId}: ${error.message}`);
+      return null;
+    });
+    if (watchedChannel) {
+      console.log(`Watched channel resolved: ${watchedChannel.name ?? '(no name)'} (${channelId}, type=${watchedChannel.type})`);
+    }
   }
   console.log(`Printer: ${config.printerName}`);
   console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
@@ -355,7 +365,7 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
   if (!isWatchedChannelMessage(message)) {
-    console.log(`Ignored message ${message.id} from channel ${message.channelId}; watching ${config.channelId}`);
+    console.log(`Ignored message ${message.id} from channel ${message.channelId}; watching ${[...watchedChannelIds].join(', ')}`);
     return;
   }
   if (!isPrintableUserMessage(message)) {
@@ -448,8 +458,8 @@ client.on(Events.GuildMemberAdd, (member) => {
 });
 
 function isWatchedChannelMessage(message) {
-  if (message.channelId === config.channelId) return true;
-  return message.channel?.isThread?.() && message.channel.parentId === config.channelId;
+  if (watchedChannelIds.has(message.channelId)) return true;
+  return message.channel?.isThread?.() && watchedChannelIds.has(message.channel.parentId);
 }
 
 function isAiChatMention(message) {
@@ -900,9 +910,9 @@ async function checkAndNotifyPrinterStatus(readyClient) {
 
 async function sendPrinterMonitorMessage(readyClient, content) {
   try {
-    const channel = await readyClient.channels.fetch(config.channelId);
+    const channel = await readyClient.channels.fetch(config.printerMonitorChannelId);
     if (!channel?.isTextBased()) {
-      console.error(`Printer monitor channel is not text based: ${config.channelId}`);
+      console.error(`Printer monitor channel is not text based: ${config.printerMonitorChannelId}`);
       return;
     }
     await channel.send(content);
