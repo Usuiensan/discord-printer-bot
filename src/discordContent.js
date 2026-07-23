@@ -120,14 +120,24 @@ export function parseNoteMessageCommand(content, prefix = '!') {
 
 async function buildNotePrintJob(noteCommand, config) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
-  const printImages = await buildNoteRasterImages(noteCommand, config);
+  const printImages = [];
+  const segments = splitNoteCutCommands(noteCommand.text);
 
-  for (const image of printImages) {
-    await printer.image(image, {
-      maxWidth: config.printWidthDots,
-      dither: config.textImageDitherMode ?? 'threshold',
-      threshold: config.textImageThreshold ?? 170
-    });
+  for (const segment of segments) {
+    if (segment.text.trim()) {
+      const images = await buildNoteRasterImages({ ...noteCommand, text: segment.text }, config);
+      printImages.push(...images);
+      for (const image of images) {
+        await printer.image(image, {
+          maxWidth: config.printWidthDots,
+          dither: config.textImageDitherMode ?? 'threshold',
+          threshold: config.textImageThreshold ?? 170
+        });
+      }
+    }
+    if (segment.cutMode) {
+      printer.cutWithFeed(segment.cutMode, config.cutFeedLines ?? 3);
+    }
   }
   printer.cut(config.cutMode);
 
@@ -140,26 +150,66 @@ async function buildNotePrintJob(noteCommand, config) {
   };
 }
 
+function splitNoteCutCommands(text) {
+  const segments = [];
+  let lines = [];
+  for (const line of String(text ?? '').replace(/\r/g, '').split('\n')) {
+    const match = line.trim().match(/^!cut(?:\s+(partial|partial3|full|none))?$/i);
+    if (!match) {
+      lines.push(line);
+      continue;
+    }
+    segments.push({ text: lines.join('\n'), cutMode: (match[1] ?? 'partial').toLowerCase() });
+    lines = [];
+  }
+  segments.push({ text: lines.join('\n'), cutMode: null });
+  return segments;
+}
+
 export async function buildNoteRasterImages(noteCommand, config) {
   const printWidth = config.printWidthDots ?? 384;
   const contentWidth = noteCommand.rotate90
     ? noteCommand.widthDots
     : Math.min(noteCommand.widthDots, printWidth);
-  const lineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
-  const printableText = notePrintableText(noteCommand.text);
-  const wrappedLines = printableText.split(/\r?\n/).flatMap((line) => (
-    wrapUnicodeText(line, contentWidth, noteTextWidthDots)
-  ));
+  const baseLineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
+  const printableText = formatDiscordMarkdownForPrint(noteCommand.text);
+  const layoutState = createLayoutState();
+  const wrappedLines = [];
+  for (const rawLine of printableText.split(/\r?\n/)) {
+    const control = applyPreviewControlCommand(rawLine, layoutState);
+    if (control.applied) continue;
+    const styleTokens = parseDiscordStyleTokens(rawLine);
+    const text = styleTokens.map((token) => token.text).join('');
+    const charStyles = styleTokens.flatMap((token) => Array.from(token.text, () => ({
+      bold: token.bold,
+      underline: token.underline
+    })));
+    const lines = wrapUnicodeText(text, Math.max(1, Math.floor(contentWidth / Math.max(1, layoutState.sizeX ?? 1))), noteTextWidthDots);
+    let offset = 0;
+    for (const line of lines) {
+      const length = Array.from(line).length;
+      wrappedLines.push({
+        text: line,
+        charStyles: charStyles.slice(offset, offset + length),
+        bold: layoutState.bold,
+        underline: layoutState.underline,
+        sizeX: layoutState.sizeX,
+        sizeY: layoutState.sizeY,
+        small: layoutState.small
+      });
+      offset += length;
+    }
+  }
   const lineImages = [];
 
-  for (const text of wrappedLines) {
+  for (const item of wrappedLines) {
     const line = {
-      ...previewLine(text),
+      ...previewLine(item.text, layoutState, item),
       raster: true,
       rasterFontSize: config.textImageFontSizeDots ?? 28,
       printWidthDots: contentWidth
     };
-    lineImages.push(await renderRasterTextLineImage(line, config, contentWidth, lineHeight));
+    lineImages.push(await renderRasterTextLineImage(line, config, contentWidth, baseLineHeight * Math.max(1, item.sizeY ?? 1)));
   }
 
   if (!noteCommand.rotate90) {
