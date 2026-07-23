@@ -172,7 +172,7 @@ export async function buildNoteRasterImages(noteCommand, config) {
     ? noteCommand.widthDots
     : Math.min(noteCommand.widthDots, printWidth);
   const baseLineHeight = (config.textImageLineHeightDots ?? 30) + (config.textImageLineGapDots ?? 6);
-  const printableText = formatDiscordMarkdownForPrint(noteCommand.text);
+  const printableText = notePrintableText(noteCommand.text, { preserveStyles: true });
   const layoutState = createLayoutState();
   const wrappedLines = [];
   for (const rawLine of printableText.split(/\r?\n/)) {
@@ -219,12 +219,12 @@ export async function buildNoteRasterImages(noteCommand, config) {
   return rotateNoteLineGroups(lineImages, contentWidth, printWidth);
 }
 
-function notePrintableText(value) {
+function notePrintableText(value, options = {}) {
   return formatDiscordMarkdownForPrint(value)
     .replace(/\u0000HEADING\d+\u0000/g, '')
     .replace(/\u0000SMALL\u0000/g, '')
     .split(/\r?\n/)
-    .map((line) => stripDiscordStyleMarkers(line))
+    .map((line) => options.preserveStyles ? line : stripDiscordStyleMarkers(line))
     .join('\n');
 }
 
