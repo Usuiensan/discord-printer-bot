@@ -63,7 +63,9 @@ Get-Printer | Select-Object Name
 - `PRINT_RETRY_ATTEMPTS`: 前ジョブ処理中など一時的なプリンタ状態での最大試行回数
 - `PRINT_RETRY_DELAY_MS`: リトライ待機時間。試行ごとに少しずつ伸びます
 - `PRINTER_MONITOR_ENABLED`: 起動中にプリンタ状態を定期監視し、問題を Discord に通知するか
-- `PRINTER_MONITOR_INTERVAL_MS`: プリンタ状態の監視間隔
+- `PRINTER_MONITOR_INTERVAL_MS`: プリンタ状態の監視間隔。既定値は5000ms
+- `PRINTER_MONITOR_FAILURE_THRESHOLD`: 何回連続で異常を検出したら通知するか。既定値は3回
+- `PRINTER_MONITOR_POST_PRINT_PAUSE_MS`: 印刷完了後に状態監視を止める時間。既定値は5000ms
 - `MEMBER_JOIN_PRINT_ENABLED`: 新しいメンバーがサーバーへ参加した時にレシートを印刷するか
 - `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
 - `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名

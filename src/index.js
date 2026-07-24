@@ -23,6 +23,7 @@ import {
   trimChatHistory
 } from './localLlm.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
+import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
@@ -42,10 +43,10 @@ let queue = Promise.resolve();
 let queuedPrintCount = 0;
 let lastPrintedMessage = null;
 let printerMonitorTimer = null;
-let lastPrinterProblemKey = '';
-let hasSeenPrinterProblem = false;
 let printerMonitorRunning = false;
+let printerMonitorPausedUntil = 0;
 let latestPrinterProblems = [];
+const printerMonitorTracker = createPrinterMonitorTracker(config.printerMonitorFailureThreshold);
 const aiChatHistories = new Map();
 const aiChatQueues = new Map();
 const activeAiJobs = new Map();
@@ -220,6 +221,8 @@ function enqueuePrintJob(message, label, job, options = {}) {
     .then(async () => {
       console.log(`Starting ${label} print ${message.id}; pending=${queuedPrintCount}`);
       await job();
+      printerMonitorPausedUntil = Date.now() + config.printerMonitorPostPrintPauseMs;
+      console.log(`Printer monitor paused for ${config.printerMonitorPostPrintPauseMs}ms after print completion`);
     });
 
   queue = run
@@ -871,7 +874,10 @@ function startPrinterMonitor(readyClient) {
     return;
   }
 
-  console.log(`Printer monitor: enabled (${config.printerMonitorIntervalMs}ms)`);
+  console.log(
+    `Printer monitor: enabled (${config.printerMonitorIntervalMs}ms, ` +
+    `${config.printerMonitorFailureThreshold} consecutive failures)`
+  );
   void checkAndNotifyPrinterStatus(readyClient);
   printerMonitorTimer = setInterval(() => {
     void checkAndNotifyPrinterStatus(readyClient);
@@ -880,6 +886,10 @@ function startPrinterMonitor(readyClient) {
 
 async function checkAndNotifyPrinterStatus(readyClient) {
   if (printerMonitorRunning) return;
+  if (shouldPausePrinterMonitor({
+    queuedPrintCount,
+    pausedUntil: printerMonitorPausedUntil
+  })) return;
   printerMonitorRunning = true;
 
   let problems = [];
@@ -893,17 +903,11 @@ async function checkAndNotifyPrinterStatus(readyClient) {
     printerMonitorRunning = false;
   }
 
-  const problemKey = problems.slice().sort().join('|');
   const hardProblems = problems.filter((problem) => problem !== NEAR_END_PROBLEM);
-  const hardProblemKey = hardProblems.slice().sort().join('|');
-  if (hardProblemKey === lastPrinterProblemKey) return;
-
-  const hadProblems = lastPrinterProblemKey !== '';
-  lastPrinterProblemKey = hardProblemKey;
-  if (hardProblems.length > 0) {
-    hasSeenPrinterProblem = true;
+  const transition = printerMonitorTracker.record(hardProblems);
+  if (transition.type === 'problem') {
     await sendPrinterMonitorMessage(readyClient, `プリンタに問題があります: ${hardProblems.join(' / ')}`);
-  } else if (hadProblems || hasSeenPrinterProblem) {
+  } else if (transition.type === 'recovered') {
     await sendPrinterMonitorMessage(readyClient, 'プリンタは正常に戻りました。');
   }
 }
