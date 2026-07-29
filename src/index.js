@@ -24,6 +24,7 @@ import {
 } from './localLlm.js';
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
+import { isOwnBotMessage } from './messageFilters.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
@@ -363,8 +364,8 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) {
-    console.log(`Ignored bot message ${message.id} from ${message.author.tag}`);
+  if (isOwnBotMessage(message)) {
+    console.log(`Ignored own bot message ${message.id} from ${message.author.tag}`);
     return;
   }
   if (!isWatchedChannelMessage(message)) {
@@ -854,7 +855,7 @@ async function resolveReprintTarget(message, targetRef) {
   if (!channel?.isTextBased()) return null;
 
   const target = await channel.messages.fetch(messageId).catch(() => null);
-  if (!target || target.author?.bot) return null;
+  if (!target || isOwnBotMessage(target)) return null;
   if (!isPrintableUserMessage(target)) return null;
   return target;
 }
