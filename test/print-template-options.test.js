@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import iconv from 'iconv-lite';
 import { buildPreviewText, buildPrintJob, parsePrintTemplateOptions } from '../src/discordContent.js';
+import { extractSymbolMessageCommands } from '../src/symbolContent.js';
 
 const config = {
   printWidthDots: 384,
@@ -61,6 +62,26 @@ test('the same increment token is substituted consistently in text, barcodes, an
 
   assert.equal(second.bytes.includes(iconv.encode('26-1129-0002', 'cp932')), true);
   assert.match(preview, /26-1129-0001/);
+});
+
+test('QR URL ending in a query assignment consumes following lines as QR data', () => {
+  const commands = extractSymbolMessageCommands([
+    '!qr https://twitter.com/intent/tweet?text=',
+    '同人誌即売会「Vライフ！7巡目」にて「IYA復讐合同」を入手しました！',
+    '伝票番号:IYA-26-1129-0001',
+    '#Vライフ #IYA復讐合同',
+    '!left',
+    '本文'
+  ].join('\n'));
+
+  assert.equal(commands.commands.length, 1);
+  assert.equal(commands.commands[0].data, [
+    'https://twitter.com/intent/tweet?text=',
+    '同人誌即売会「Vライフ！7巡目」にて「IYA復讐合同」を入手しました！',
+    '伝票番号:IYA-26-1129-0001',
+    '#Vライフ #IYA復讐合同'
+  ].join('\n'));
+  assert.equal(commands.text, '!left\n本文');
 });
 
 test('template copies and increment tokens reject unsafe ranges', () => {

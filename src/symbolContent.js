@@ -212,8 +212,9 @@ export function parseSymbolMessageCommands(content, prefix = '!') {
 export function extractSymbolMessageCommands(content, prefix = '!') {
   const commands = [];
   const textLines = [];
-
-  for (const line of String(content ?? '').split(/\r?\n/)) {
+  const lines = String(content ?? '').split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (isCodeBlockFence(line)) {
       continue;
     }
@@ -221,6 +222,15 @@ export function extractSymbolMessageCommands(content, prefix = '!') {
     const commandLine = stripInlineCodeMarkers(line);
     const command = parseSymbolCommandLine(commandLine, prefix);
     if (command) {
+      if (command.type === 'qr' && isMultilineQrUrl(command.data)) {
+        const continuation = [];
+        while (index + 1 < lines.length && !looksLikeSymbolCommand(lines[index + 1], prefix)) {
+          continuation.push(lines[++index]);
+        }
+        if (continuation.length > 0) {
+          command.data = `${command.data}${continuation.map((value) => `\n${value}`).join('')}`;
+        }
+      }
       commands.push(command);
     } else {
       textLines.push(line);
@@ -231,6 +241,16 @@ export function extractSymbolMessageCommands(content, prefix = '!') {
     commands,
     text: textLines.join('\n')
   };
+}
+
+function isMultilineQrUrl(data) {
+  return /^https?:\/\/\S*[?&][^=\s]+=$/i.test(String(data ?? ''));
+}
+
+function looksLikeSymbolCommand(line, prefix = '!') {
+  const value = String(line ?? '').trimStart();
+  if (!value.startsWith(prefix)) return false;
+  return /^[^\s]+(?:\s|$)/.test(value.slice(String(prefix).length));
 }
 
 function isCodeBlockFence(line) {
