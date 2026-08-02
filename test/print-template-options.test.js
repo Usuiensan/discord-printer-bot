@@ -39,6 +39,16 @@ test('template directives suppress the header, set copy count, and are not print
   assert.equal(first.bytes.includes(iconv.encode('!copies', 'cp932')), false);
 });
 
+test('noheader suppresses the avatar fallback as well as the author header', async () => {
+  const job = await buildPrintJob(
+    message('!noheader\n本文'),
+    { ...config, printAuthorAvatar: true },
+    { printHeader: false }
+  );
+
+  assert.deepEqual(job.warnings, []);
+});
+
 test('the same increment token is substituted consistently in text, barcodes, and previews', async () => {
   const content = [
     '!noheader',

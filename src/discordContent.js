@@ -91,11 +91,13 @@ export async function buildPrintJob(message, config, options = {}) {
   const warnings = [];
   const textPrintImages = [];
 
-  await appendDiscordHeader(printer, printableMessage, config, {
-    printHeader: templateOptions.omitHeader ? false : options.printHeader,
-    printNumber: options.printNumber,
-    warnings
-  });
+  if (!templateOptions.omitHeader) {
+    await appendDiscordHeader(printer, printableMessage, config, {
+      printHeader: options.printHeader,
+      printNumber: options.printNumber,
+      warnings
+    });
+  }
 
   const receiptLineDocument = extractReceiptLineMessage(printableMessage.content ?? '', config.messageCommandPrefix);
   if (receiptLineDocument != null) {
