@@ -13,7 +13,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
-import { buildMemberJoinPrintJob, buildPreviewImage, buildPrintJob } from './discordContent.js';
+import { buildMemberJoinPrintJob, buildPreviewImage, buildPrintJob, parsePrintTemplateOptions } from './discordContent.js';
 import {
   buildThinkingText,
   chatWithOllama,
@@ -56,21 +56,34 @@ const watchedChannelIds = new Set(config.channelIds ?? [config.channelId]);
 
 function enqueuePrint(message) {
   enqueuePrintJob(message, 'message', async () => {
-    const omitHeader = shouldOmitHeader(message);
+    const templateOptions = parsePrintTemplateOptions(message.content ?? '', config.messageCommandPrefix);
+    const omitHeader = templateOptions.omitHeader || shouldOmitHeader(message);
     const printNumber = omitHeader ? null : await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings, printImages, usesPrintNumber = true, updatesMergeState = true } = await buildPrintJob(message, config, {
-      printHeader: !omitHeader,
-      printNumber
-    });
-    await sendRawToPrinter(bytes, config.printerName, {
-      ...config,
-      onRetry: async (retry) => {
-        if (retryNotified) return;
-        retryNotified = true;
-        await markPrintRetry(message, retry);
-      }
-    });
+    const warningSet = new Set();
+    const printImages = [];
+    let usesPrintNumber = false;
+    let updatesMergeState = false;
+    for (let copyIndex = 0; copyIndex < templateOptions.copies; copyIndex += 1) {
+      const job = await buildPrintJob(message, config, {
+        printHeader: !omitHeader,
+        printNumber,
+        copyIndex
+      });
+      job.warnings.forEach((warning) => warningSet.add(warning));
+      if (copyIndex === 0) printImages.push(...(job.printImages ?? []));
+      usesPrintNumber ||= job.usesPrintNumber ?? true;
+      updatesMergeState ||= job.updatesMergeState ?? true;
+      await sendRawToPrinter(job.bytes, config.printerName, {
+        ...config,
+        onRetry: async (retry) => {
+          if (retryNotified) return;
+          retryNotified = true;
+          await markPrintRetry(message, retry);
+        }
+      });
+    }
+    const warnings = [...warningSet];
     if (printNumber && usesPrintNumber) {
       await commitPrintNumber(printNumber);
     }
@@ -130,22 +143,35 @@ function enqueueMemberJoinPrint(member) {
 
 function enqueueReprint(message, targetMessage) {
   return enqueuePrintJob(message, 'reprint', async () => {
-    const omitHeader = false;
-    const printNumber = await peekNextPrintNumber();
+    const templateOptions = parsePrintTemplateOptions(targetMessage.content ?? '', config.messageCommandPrefix);
+    const omitHeader = templateOptions.omitHeader;
+    const printNumber = omitHeader ? null : await peekNextPrintNumber();
     let retryNotified = false;
-    const { bytes, warnings, printImages, usesPrintNumber = true, updatesMergeState = true } = await buildPrintJob(targetMessage, config, {
-      printHeader: !omitHeader,
-      printNumber
-    });
-    await sendRawToPrinter(bytes, config.printerName, {
-      ...config,
-      onRetry: async (retry) => {
-        if (retryNotified) return;
-        retryNotified = true;
-        await markPrintRetry(message, retry);
-      }
-    });
-    if (usesPrintNumber) await commitPrintNumber(printNumber);
+    const warningSet = new Set();
+    const printImages = [];
+    let usesPrintNumber = false;
+    let updatesMergeState = false;
+    for (let copyIndex = 0; copyIndex < templateOptions.copies; copyIndex += 1) {
+      const job = await buildPrintJob(targetMessage, config, {
+        printHeader: !omitHeader,
+        printNumber,
+        copyIndex
+      });
+      job.warnings.forEach((warning) => warningSet.add(warning));
+      if (copyIndex === 0) printImages.push(...(job.printImages ?? []));
+      usesPrintNumber ||= job.usesPrintNumber ?? true;
+      updatesMergeState ||= job.updatesMergeState ?? true;
+      await sendRawToPrinter(job.bytes, config.printerName, {
+        ...config,
+        onRetry: async (retry) => {
+          if (retryNotified) return;
+          retryNotified = true;
+          await markPrintRetry(message, retry);
+        }
+      });
+    }
+    const warnings = [...warningSet];
+    if (printNumber && usesPrintNumber) await commitPrintNumber(printNumber);
     if (updatesMergeState) {
       lastPrintedMessage = {
         authorId: targetMessage.author.id,

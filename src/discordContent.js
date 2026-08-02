@@ -13,9 +13,76 @@ const TEXT_EXT_RE = /\.(txt|text|md|markdown|csv|tsv|json|jsonl|log|ini|conf|cfg
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
 const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0000$/;
+const TEMPLATE_INCREMENT_RE = /\{\{increment:(\d+)\}\}/gi;
+const TEMPLATE_COPY_LIMIT = 100;
+
+export function parsePrintTemplateOptions(content, prefix = '!') {
+  const escapedPrefix = escapeRegex(String(prefix || '!'));
+  const noHeaderRe = new RegExp(`^\\s*${escapedPrefix}(?:noheader|header\\s+off)\\s*$`, 'i');
+  const copiesRe = new RegExp(`^\\s*${escapedPrefix}(?:copies|repeat)\\s+(\\d+)\\s*$`, 'i');
+  let omitHeader = false;
+  let copies = 1;
+  const lines = [];
+
+  for (const line of String(content ?? '').replace(/\r/g, '').split('\n')) {
+    if (noHeaderRe.test(line)) {
+      omitHeader = true;
+      continue;
+    }
+    const copiesMatch = line.match(copiesRe);
+    if (copiesMatch) {
+      copies = parseTemplateCopies(copiesMatch[1]);
+      continue;
+    }
+    lines.push(line);
+  }
+
+  const cleaned = lines.join('\n').replace(/^\n+|\n+$/g, '');
+  validateTemplateIncrementTokens(cleaned, copies);
+  return { content: cleaned, copies, omitHeader };
+}
+
+export function renderPrintTemplateCopy(content, copyIndex = 0) {
+  if (!Number.isInteger(copyIndex) || copyIndex < 0) {
+    throw new Error('テンプレートの印刷番号が不正です');
+  }
+  return String(content ?? '').replace(TEMPLATE_INCREMENT_RE, (_match, seedText) => {
+    const value = Number(seedText) + copyIndex;
+    if (!Number.isSafeInteger(value) || String(value).length > seedText.length) {
+      throw new Error(`{{increment:${seedText}}} は${copyIndex + 1}枚目で桁あふれします`);
+    }
+    return String(value).padStart(seedText.length, '0');
+  });
+}
+
+function parseTemplateCopies(value) {
+  const copies = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(copies) || copies < 1 || copies > TEMPLATE_COPY_LIMIT) {
+    throw new Error(`!copies は1～${TEMPLATE_COPY_LIMIT}枚で指定してください`);
+  }
+  return copies;
+}
+
+function validateTemplateIncrementTokens(content, copies) {
+  for (const match of String(content).matchAll(TEMPLATE_INCREMENT_RE)) {
+    const seedText = match[1];
+    const seed = Number(seedText);
+    if (!Number.isSafeInteger(seed)) {
+      throw new Error(`{{increment:${seedText}}} の開始番号が大きすぎます`);
+    }
+    if (String(seed + copies - 1).length > seedText.length) {
+      throw new Error(`{{increment:${seedText}}} は${copies}枚の印刷で桁あふれします`);
+    }
+  }
+}
 
 export async function buildPrintJob(message, config, options = {}) {
-  const noteCommand = parseNoteMessageCommand(message.content ?? '', config.messageCommandPrefix);
+  const templateOptions = parsePrintTemplateOptions(message.content ?? '', config.messageCommandPrefix);
+  const printableMessage = {
+    ...message,
+    content: renderPrintTemplateCopy(templateOptions.content, options.copyIndex ?? 0)
+  };
+  const noteCommand = parseNoteMessageCommand(printableMessage.content, config.messageCommandPrefix);
   if (noteCommand) {
     return buildNotePrintJob(noteCommand, config);
   }
@@ -24,13 +91,13 @@ export async function buildPrintJob(message, config, options = {}) {
   const warnings = [];
   const textPrintImages = [];
 
-  await appendDiscordHeader(printer, message, config, {
-    printHeader: options.printHeader,
+  await appendDiscordHeader(printer, printableMessage, config, {
+    printHeader: templateOptions.omitHeader ? false : options.printHeader,
     printNumber: options.printNumber,
     warnings
   });
 
-  const receiptLineDocument = extractReceiptLineMessage(message.content ?? '', config.messageCommandPrefix);
+  const receiptLineDocument = extractReceiptLineMessage(printableMessage.content ?? '', config.messageCommandPrefix);
   if (receiptLineDocument != null) {
     const unsupportedChars = unsupportedPrinterCharacters(receiptLineDocument);
     const jobConfig = imageModeConfig(config, unsupportedChars);
@@ -44,10 +111,10 @@ export async function buildPrintJob(message, config, options = {}) {
     };
   }
 
-  const symbolExtraction = extractSymbolMessageCommands(message.content ?? '', config.messageCommandPrefix);
+  const symbolExtraction = extractSymbolMessageCommands(printableMessage.content ?? '', config.messageCommandPrefix);
   const contentMessage = symbolExtraction.commands.length > 0
-    ? { ...message, content: symbolExtraction.text }
-    : message;
+    ? { ...printableMessage, content: symbolExtraction.text }
+    : printableMessage;
   const { text, imageItems, urls } = await extractMessageContent(contentMessage, config);
   const unsupportedChars = await collectJobUnsupportedCharacters(contentMessage, text, imageItems, config);
   const jobConfig = imageModeConfig(config, unsupportedChars);
@@ -368,7 +435,9 @@ function previewRowText(line) {
 }
 
 async function buildPreviewRows(message, config) {
-  const content = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
+  const previewContent = stripPreviewCommand(message.content ?? '', config.messageCommandPrefix);
+  const templateOptions = parsePrintTemplateOptions(previewContent, config.messageCommandPrefix);
+  const content = renderPrintTemplateCopy(templateOptions.content, 0);
   const receiptLineDocument = extractReceiptLineMessage(content, config.messageCommandPrefix);
   if (receiptLineDocument != null) {
     return renderReceiptLinePreview(receiptLineDocument, config);
