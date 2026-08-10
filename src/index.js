@@ -6,6 +6,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   MessageType,
   Partials
 } from 'discord.js';
@@ -25,6 +26,7 @@ import {
 import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
+import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
@@ -135,7 +137,8 @@ function enqueueMemberJoinPrint(member) {
       console.error(`member-join print failed for ${member.user.id}:`, error);
       await sendPrinterMonitorMessage(
         client,
-        `新規参加メンバーの印刷に失敗しました: ${member.displayName ?? member.user.username} / ${error.message}`
+        `新規参加メンバーの印刷に失敗しました: ${member.displayName ?? member.user.username} / ${error.message}`,
+        { error: true }
       );
     }
   });
@@ -337,7 +340,7 @@ async function markPrintFailure(message, reason) {
     console.error(`Failed to remove near-end reaction from message ${message.id}:`, error);
   });
   await addReaction(message, config.printErrorReaction);
-  await replyToMessage(message, `印刷に失敗しました: ${reason}`);
+  await replyToMessage(message, `印刷に失敗しました: ${reason}`, [], { error: true });
 }
 
 async function addReaction(message, emoji) {
@@ -349,13 +352,14 @@ async function addReaction(message, emoji) {
   }
 }
 
-async function replyToMessage(message, content, files = []) {
+async function replyToMessage(message, content, files = [], { error = false } = {}) {
   try {
-    await message.reply({
+    const payload = {
       content,
       files,
       allowedMentions: { repliedUser: false }
-    });
+    };
+    await message.reply(withSilentFlags(error ? withErrorMention(payload) : payload));
   } catch (error) {
     console.error(`Failed to reply to message ${message.id}:`, error);
   }
@@ -448,11 +452,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const ownerId = activeJob?.message.author.id ?? retryContext?.userId;
 
   if (!ownerId) {
-    await interaction.reply({ content: 'このAI操作は期限切れです。', ephemeral: true });
+    await interaction.reply({
+      content: 'このAI操作は期限切れです。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
     return;
   }
   if (interaction.user.id !== ownerId) {
-    await interaction.reply({ content: 'このボタンは質問者だけが操作できます。', ephemeral: true });
+    await interaction.reply({
+      content: 'このボタンは質問者だけが操作できます。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
     return;
   }
 
@@ -528,9 +538,11 @@ function enqueueAiChat(message, options = {}) {
       await addReaction(message, config.aiErrorReaction);
       if (activeJob?.progressMessage) {
         await activeJob.progressMessage.edit({
-          content: `<@${message.author.id}> ローカルLLMの処理に失敗しました: ${error.message}`,
+          ...withErrorMention({
+            content: `<@${message.author.id}> ローカルLLMの処理に失敗しました: ${error.message}`,
+            allowedMentions: { users: [message.author.id], repliedUser: false }
+          }, [message.author.id]),
           components: [],
-          allowedMentions: { users: [message.author.id], repliedUser: false }
         }).catch(() => {});
       } else {
         await replyWithUserMention(message, `ローカルLLMの処理に失敗しました: ${error.message}`);
@@ -628,7 +640,7 @@ async function createOrResetAiProgressMessage(message, existing, startedAt) {
     await existing.edit(payload);
     return existing;
   }
-  return message.reply(payload);
+  return message.reply(withSilentFlags(payload));
 }
 
 function createAiProgressUpdater(message, progressMessage, startedAt) {
@@ -747,15 +759,16 @@ function sendAiMessagePart(message, content, sentAny, files = [], components = [
     components,
     allowedMentions: { users: [message.author.id], repliedUser: false }
   };
-  return sentAny ? message.channel.send(payload) : message.reply(payload);
+  const silentPayload = withSilentFlags(payload);
+  return sentAny ? message.channel.send(silentPayload) : message.reply(silentPayload);
 }
 
 async function replyWithUserMention(message, content) {
   try {
-    await message.reply({
+    await message.reply(withSilentFlags(withErrorMention({
       content: `<@${message.author.id}> ${content}`,
       allowedMentions: { users: [message.author.id], repliedUser: false }
-    });
+    }, [message.author.id])));
   } catch (error) {
     console.error(`Failed to reply to message ${message.id}:`, error);
   }
@@ -769,11 +782,11 @@ function isPreviewMessageCommand(message) {
 async function replyWithPreview(message) {
   const previewPng = await buildPreviewImage(message, config);
   const attachment = new AttachmentBuilder(previewPng, { name: 'preview.png' });
-  await message.reply({
+  await message.reply(withSilentFlags({
     content: '印刷プレビュー:',
     files: [attachment],
     allowedMentions: { repliedUser: false }
-  });
+  }));
 }
 
 function parseRawEscposMessageCommand(message) {
@@ -933,20 +946,21 @@ async function checkAndNotifyPrinterStatus(readyClient) {
   const hardProblems = problems.filter((problem) => problem !== NEAR_END_PROBLEM);
   const transition = printerMonitorTracker.record(hardProblems);
   if (transition.type === 'problem') {
-    await sendPrinterMonitorMessage(readyClient, `プリンタに問題があります: ${hardProblems.join(' / ')}`);
+    await sendPrinterMonitorMessage(readyClient, `プリンタに問題があります: ${hardProblems.join(' / ')}`, { error: true });
   } else if (transition.type === 'recovered') {
     await sendPrinterMonitorMessage(readyClient, 'プリンタは正常に戻りました。');
   }
 }
 
-async function sendPrinterMonitorMessage(readyClient, content) {
+async function sendPrinterMonitorMessage(readyClient, content, { error = false } = {}) {
   try {
     const channel = await readyClient.channels.fetch(config.printerMonitorChannelId);
     if (!channel?.isTextBased()) {
       console.error(`Printer monitor channel is not text based: ${config.printerMonitorChannelId}`);
       return;
     }
-    await channel.send(content);
+    const payload = { content };
+    await channel.send(withSilentFlags(error ? withErrorMention(payload) : payload));
   } catch (error) {
     console.error('Failed to send printer monitor message:', error);
   }
