@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   SLOT_EMOJI_LINE,
   SLOT_SYMBOLS,
+  acknowledgeSlotInteraction,
   buildSlotMessage,
   drawSlot,
   isWinningSlot
@@ -25,4 +26,23 @@ test('slot message changes only the final line for a winning result', () => {
   assert.match(winning.reply, /ﾁﾝｯ ｴﾝ/);
   assert.match(winning.reply, /おめでとう！$/);
   assert.match(winning.print, /^<a:enchant_ensan:1562641619960725565> <:ensan:1562641655079632916>\n!center/m);
+});
+
+test('slot interaction acknowledges before editing the public result', async () => {
+  const calls = [];
+  const interaction = {
+    async deferReply() {
+      calls.push('defer');
+    },
+    async editReply(payload) {
+      calls.push(['edit', payload.content]);
+    }
+  };
+  const result = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾁｬﾝ']);
+
+  await acknowledgeSlotInteraction(interaction, result, () => calls.push('print'));
+
+  assert.equal(calls[0], 'defer');
+  assert.equal(calls[1][0], 'edit');
+  assert.equal(calls[2], 'print');
 });

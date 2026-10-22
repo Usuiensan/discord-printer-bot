@@ -1,3 +1,5 @@
+import { MessageFlags } from 'discord.js';
+
 export const SLOT_EMOJI_LINE = '<a:enchant_ensan:1562641619960725565> <:ensan:1562641655079632916>';
 export const SLOT_SYMBOLS = Object.freeze(['ｳｽｲ', 'ｴﾝ', 'ｻﾝ', 'ﾘｭｳ', 'ﾁｬﾝ', 'ﾄ', 'ﾍｹ']);
 const WINNING_SLOT = Object.freeze(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']);
@@ -42,4 +44,13 @@ export function buildSlotMessage(result) {
     reply,
     print: [SLOT_EMOJI_LINE, '!center', ...lines.slice(1)].join('\n')
   };
+}
+
+export async function acknowledgeSlotInteraction(interaction, result, enqueuePrint) {
+  await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+  await interaction.editReply({
+    content: result.reply,
+    allowedMentions: { repliedUser: false }
+  });
+  enqueuePrint(interaction, result.print);
 }

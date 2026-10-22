@@ -28,7 +28,7 @@ import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
 import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
-import { buildSlotMessage, drawSlot } from './slot.js';
+import { acknowledgeSlotInteraction, buildSlotMessage, drawSlot } from './slot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
@@ -803,12 +803,24 @@ async function registerSlotCommand(readyClient) {
 }
 
 async function handleSlotCommand(interaction) {
-  const result = buildSlotMessage(drawSlot());
-  await interaction.reply(withSilentFlags({
-    content: result.reply,
-    allowedMentions: { repliedUser: false }
-  }));
-  enqueueSlotPrint(interaction, result.print);
+  try {
+    await acknowledgeSlotInteraction(interaction, buildSlotMessage(drawSlot()), enqueueSlotPrint);
+  } catch (error) {
+    console.error(`Slot command failed for ${interaction.id}:`, error);
+    const payload = withSilentFlags(withErrorMention({
+      content: `スロットの処理に失敗しました: ${error.message}`,
+      allowedMentions: { repliedUser: false }
+    }));
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(payload).catch((replyError) => {
+        console.error(`Failed to report slot command error ${interaction.id}:`, replyError);
+      });
+    } else {
+      await interaction.reply(payload).catch((replyError) => {
+        console.error(`Failed to acknowledge slot command error ${interaction.id}:`, replyError);
+      });
+    }
+  }
 }
 
 function enqueueSlotPrint(interaction, content) {
