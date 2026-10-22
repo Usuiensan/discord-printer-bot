@@ -33,6 +33,7 @@ export function buildSlotMessage(result) {
     throw new Error('スロット結果が不正です');
   }
 
+  const winning = isWinningSlot(result);
   const lines = [
     'エンサンチャンスロット',
     'ｴﾝｻﾝﾁｬﾝがそろうチャンスです',
@@ -49,12 +50,13 @@ export function buildSlotMessage(result) {
     `ﾁﾝｯ ${result[1]}`,
     `ﾁﾝｯ ${result[2]}`,
     '',
-    isWinningSlot(result) ? 'おめでとう！' : 'またあした'
+    winning ? 'おめでとう！' : 'またあした'
   ];
   const reply = lines.join('\n');
   return {
     reply,
-    print: ['!center', ...lines].join('\n')
+    print: ['!center', ...lines].join('\n'),
+    winning
   };
 }
 
@@ -64,5 +66,5 @@ export async function acknowledgeSlotInteraction(interaction, result, enqueuePri
     content: result.reply,
     allowedMentions: { repliedUser: false }
   });
-  enqueuePrint(interaction, result.print);
+  enqueuePrint(interaction, result.print, result.winning);
 }

@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { buildMemberJoinPrintJob, buildPreviewImage, buildPrintJob, parsePrintTemplateOptions } from './discordContent.js';
+import { EscPosBuilder } from './escpos.js';
 import {
   buildThinkingText,
   chatWithOllama,
@@ -37,6 +38,9 @@ const HEADERLESS_AUTHOR_ID = '1531652909065048255';
 const SLOT_COMMAND = new SlashCommandBuilder()
   .setName('すろっと')
   .setDescription('えんさんちゃんスロット');
+const DRAWER_OPEN_COMMAND = new SlashCommandBuilder()
+  .setName('drawer-open')
+  .setDescription('キャッシュドロワーを開きます');
 
 const client = new Client({
   intents: [
@@ -399,7 +403,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
   console.log(`Printer: ${config.printerName}`);
   console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
-  await registerSlotCommand(readyClient);
+  await registerCommands(readyClient);
   startPrinterMonitor(readyClient);
 });
 
@@ -455,8 +459,14 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (interaction.isChatInputCommand() && interaction.commandName === 'すろっと') {
-    await handleSlotCommand(interaction);
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'すろっと') {
+      await handleSlotCommand(interaction);
+      return;
+    }
+    if (interaction.commandName === 'drawer-open') {
+      await handleDrawerOpenCommand(interaction);
+    }
     return;
   }
   if (!interaction.isButton() || !interaction.customId.startsWith('ai:')) return;
@@ -788,21 +798,23 @@ async function replyWithUserMention(message, content) {
   }
 }
 
-async function registerSlotCommand(readyClient) {
+async function registerCommands(readyClient) {
   try {
     const commandManager = config.guildId
       ? (await readyClient.guilds.fetch(config.guildId)).commands
       : readyClient.application.commands;
     const commands = await commandManager.fetch();
-    const existing = commands.find((command) => command.name === SLOT_COMMAND.name && command.type === 1);
-    if (existing) {
-      await commandManager.edit(existing.id, SLOT_COMMAND.toJSON());
-    } else {
-      await commandManager.create(SLOT_COMMAND.toJSON());
+    for (const commandDefinition of [SLOT_COMMAND, DRAWER_OPEN_COMMAND]) {
+      const existing = commands.find((command) => command.name === commandDefinition.name && command.type === 1);
+      if (existing) {
+        await commandManager.edit(existing.id, commandDefinition.toJSON());
+      } else {
+        await commandManager.create(commandDefinition.toJSON());
+      }
+      console.log(`Registered /${commandDefinition.name}${config.guildId ? ` for guild ${config.guildId}` : ' globally'}`);
     }
-    console.log(`Registered /${SLOT_COMMAND.name}${config.guildId ? ` for guild ${config.guildId}` : ' globally'}`);
   } catch (error) {
-    console.error(`Failed to register /${SLOT_COMMAND.name}:`, error);
+    console.error('Failed to register slash commands:', error);
   }
 }
 
@@ -827,7 +839,50 @@ async function handleSlotCommand(interaction) {
   }
 }
 
-function enqueueSlotPrint(interaction, content) {
+async function handleDrawerOpenCommand(interaction) {
+  try {
+    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    const eventInfo = {
+      id: `drawer-${interaction.id}`,
+      author: interaction.user,
+      authorTag: interaction.user.tag ?? interaction.user.username
+    };
+    await enqueuePrintJob(eventInfo, 'drawer-open', async () => {
+      await openDrawer();
+      console.log(`Opened drawer for ${interaction.id}`);
+    }, {
+      onFailure: async (error) => {
+        console.error(`Drawer open failed for ${interaction.id}:`, error);
+      }
+    });
+    await interaction.editReply({
+      content: 'ドロワーを開きました。',
+      allowedMentions: { repliedUser: false }
+    });
+  } catch (error) {
+    console.error(`Drawer command failed for ${interaction.id}:`, error);
+    const payload = withSilentFlags(withErrorMention({
+      content: `ドロワーを開けませんでした: ${error.message}`,
+      allowedMentions: { repliedUser: false }
+    }));
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(payload).catch((replyError) => {
+        console.error(`Failed to report drawer command error ${interaction.id}:`, replyError);
+      });
+    } else {
+      await interaction.reply(payload).catch((replyError) => {
+        console.error(`Failed to acknowledge drawer command error ${interaction.id}:`, replyError);
+      });
+    }
+  }
+}
+
+async function openDrawer() {
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  await sendRawToPrinter(printer.drawerPulse().build(), config.printerName, config);
+}
+
+function enqueueSlotPrint(interaction, content, winning) {
   const eventInfo = {
     id: `slot-${interaction.id}`,
     author: interaction.user,
@@ -850,6 +905,20 @@ function enqueueSlotPrint(interaction, content) {
     const job = await buildPrintJob(message, config, { printHeader: true, printNumber });
     await sendRawToPrinter(job.bytes, config.printerName, config);
     await commitPrintNumber(printNumber);
+    if (winning) {
+      try {
+        await openDrawer();
+        console.log(`Opened drawer for winning slot ${interaction.id}`);
+      } catch (error) {
+        console.error(`Winning slot printed, but drawer open failed for ${interaction.id}:`, error);
+        await interaction.followUp(withSilentFlags(withErrorMention({
+          content: `当たりのドロワーを開けませんでした: ${error.message}`,
+          allowedMentions: { repliedUser: false }
+        }))).catch((followUpError) => {
+          console.error(`Failed to report drawer error for ${interaction.id}:`, followUpError);
+        });
+      }
+    }
     if (job.warnings.length > 0) {
       console.warn(`Printed slot ${interaction.id} with ${job.warnings.length} warning(s): ${job.warnings.join(' / ')}`);
     } else {

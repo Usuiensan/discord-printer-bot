@@ -29,8 +29,12 @@ test('slot message treats text and repeated stamp patterns as winning results', 
   assert.match(losing.reply, /またあした$/);
   assert.match(winning.reply, /ﾁﾝｯ ｴﾝ/);
   assert.match(winning.reply, /おめでとう！$/);
+  assert.equal(losing.winning, false);
+  assert.equal(winning.winning, true);
+  assert.doesNotMatch(winning.print, /!drawer/);
   assert.match(stampWinning.reply, new RegExp(`ﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\n\\nおめでとう！$`));
-  assert.match(stampWinning.print, new RegExp(`!center[\\s\\S]*ﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\n\\nおめでとう！$`));
+  assert.equal(stampWinning.winning, true);
+  assert.doesNotMatch(stampWinning.print, /!drawer/);
 });
 
 test('slot interaction acknowledges before editing the public result', async () => {
@@ -45,9 +49,9 @@ test('slot interaction acknowledges before editing the public result', async () 
   };
   const result = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾁｬﾝ']);
 
-  await acknowledgeSlotInteraction(interaction, result, () => calls.push('print'));
+  await acknowledgeSlotInteraction(interaction, result, (_interaction, _content, winning) => calls.push(['print', winning]));
 
   assert.equal(calls[0], 'defer');
   assert.equal(calls[1][0], 'edit');
-  assert.equal(calls[2], 'print');
+  assert.deepEqual(calls[2], ['print', false]);
 });

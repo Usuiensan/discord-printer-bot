@@ -205,6 +205,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -Logic
 ### スラッシュコマンド
 
 - `/すろっと`: えんさんちゃんスロットの結果を返信し、同じ内容を印刷します。`DISCORD_GUILD_ID` を設定している場合はそのサーバーへ即時登録され、未設定時はグローバルコマンドとして登録されます。
+- `/drawer-open`: 印刷せずにキャッシュドロワーを開きます。
 
 通常利用者向けには [README.md](README.md) に主要コマンドだけを載せています。ここでは実装済みの詳細コマンドを列挙します。
 
