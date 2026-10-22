@@ -842,7 +842,7 @@ function enqueueSlotPrint(interaction, content) {
       embeds: [],
       messageSnapshots: new Map()
     };
-    const job = await buildPrintJob(message, config, { printHeader: false });
+    const job = await buildPrintJob(message, config, { printHeader: true });
     await sendRawToPrinter(job.bytes, config.printerName, config);
     if (job.warnings.length > 0) {
       console.warn(`Printed slot ${interaction.id} with ${job.warnings.length} warning(s): ${job.warnings.join(' / ')}`);
