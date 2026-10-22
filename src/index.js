@@ -830,6 +830,7 @@ function enqueueSlotPrint(interaction, content) {
     authorTag: interaction.user.tag ?? interaction.user.username
   };
   enqueuePrintJob(eventInfo, 'slot', async () => {
+    const printNumber = await peekNextPrintNumber();
     const message = {
       id: eventInfo.id,
       content,
@@ -842,8 +843,9 @@ function enqueueSlotPrint(interaction, content) {
       embeds: [],
       messageSnapshots: new Map()
     };
-    const job = await buildPrintJob(message, config, { printHeader: true });
+    const job = await buildPrintJob(message, config, { printHeader: true, printNumber });
     await sendRawToPrinter(job.bytes, config.printerName, config);
+    await commitPrintNumber(printNumber);
     if (job.warnings.length > 0) {
       console.warn(`Printed slot ${interaction.id} with ${job.warnings.length} warning(s): ${job.warnings.join(' / ')}`);
     } else {
