@@ -8,7 +8,8 @@ import {
   GatewayIntentBits,
   MessageFlags,
   MessageType,
-  Partials
+  Partials,
+  SlashCommandBuilder
 } from 'discord.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -27,10 +28,14 @@ import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
 import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
+import { buildSlotMessage, drawSlot } from './slot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
 const NEAR_END_PROBLEM = 'レシート用紙残量少';
+const SLOT_COMMAND = new SlashCommandBuilder()
+  .setName('すろっと')
+  .setDescription('えんさんちゃんスロット');
 
 const client = new Client({
   intents: [
@@ -390,6 +395,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
   console.log(`Printer: ${config.printerName}`);
   console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
+  await registerSlotCommand(readyClient);
   startPrinterMonitor(readyClient);
 });
 
@@ -445,6 +451,10 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'すろっと') {
+    await handleSlotCommand(interaction);
+    return;
+  }
   if (!interaction.isButton() || !interaction.customId.startsWith('ai:')) return;
   const [, action, messageId] = interaction.customId.split(':');
   const activeJob = activeAiJobs.get(messageId);
@@ -772,6 +782,69 @@ async function replyWithUserMention(message, content) {
   } catch (error) {
     console.error(`Failed to reply to message ${message.id}:`, error);
   }
+}
+
+async function registerSlotCommand(readyClient) {
+  try {
+    const commandManager = config.guildId
+      ? (await readyClient.guilds.fetch(config.guildId)).commands
+      : readyClient.application.commands;
+    const commands = await commandManager.fetch();
+    const existing = commands.find((command) => command.name === SLOT_COMMAND.name && command.type === 1);
+    if (existing) {
+      await commandManager.edit(existing.id, SLOT_COMMAND.toJSON());
+    } else {
+      await commandManager.create(SLOT_COMMAND.toJSON());
+    }
+    console.log(`Registered /${SLOT_COMMAND.name}${config.guildId ? ` for guild ${config.guildId}` : ' globally'}`);
+  } catch (error) {
+    console.error(`Failed to register /${SLOT_COMMAND.name}:`, error);
+  }
+}
+
+async function handleSlotCommand(interaction) {
+  const result = buildSlotMessage(drawSlot());
+  await interaction.reply(withSilentFlags({
+    content: result.reply,
+    allowedMentions: { repliedUser: false }
+  }));
+  enqueueSlotPrint(interaction, result.print);
+}
+
+function enqueueSlotPrint(interaction, content) {
+  const eventInfo = {
+    id: `slot-${interaction.id}`,
+    author: interaction.user,
+    authorTag: interaction.user.tag ?? interaction.user.username
+  };
+  enqueuePrintJob(eventInfo, 'slot', async () => {
+    const message = {
+      id: eventInfo.id,
+      content,
+      author: interaction.user,
+      member: interaction.member,
+      createdAt: new Date(),
+      createdTimestamp: Date.now(),
+      attachments: new Map(),
+      stickers: new Map(),
+      embeds: [],
+      messageSnapshots: new Map()
+    };
+    const job = await buildPrintJob(message, config, { printHeader: false });
+    await sendRawToPrinter(job.bytes, config.printerName, config);
+    if (job.warnings.length > 0) {
+      console.warn(`Printed slot ${interaction.id} with ${job.warnings.length} warning(s): ${job.warnings.join(' / ')}`);
+    } else {
+      console.log(`Printed slot ${interaction.id}`);
+    }
+  }, {
+    onFailure: async (error) => {
+      await interaction.followUp(withSilentFlags(withErrorMention({
+        content: `スロットの印刷に失敗しました: ${error.message}`,
+        allowedMentions: { repliedUser: false }
+      })));
+    }
+  });
 }
 
 function isPreviewMessageCommand(message) {

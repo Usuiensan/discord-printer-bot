@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 import { EscPosBuilder } from '../src/escpos.js';
-import { buildPrintJob } from '../src/discordContent.js';
+import { buildPrintJob, imageModeWarning, unsupportedPrinterCharacters } from '../src/discordContent.js';
 import { appendReceiptLine } from '../src/receiptLineContent.js';
 
 const RASTER_COMMAND = Buffer.from([0x1d, 0x76, 0x30, 0x00]);
@@ -71,6 +71,11 @@ test('one unsupported character switches all message text to one attached binary
   assert.equal(metadata.height, 72);
   const pixels = await sharp(job.printImages[0]).grayscale().raw().toBuffer();
   assert.ok([...new Set(pixels)].every((value) => value === 0 || value === 255));
+});
+
+test('image mode warning omits a fake unsupported character when only images remain', () => {
+  assert.deepEqual(unsupportedPrinterCharacters('\u0000INLINEIMAGE:emoji1:ensan\u0000'), []);
+  assert.equal(imageModeWarning([]), '画像印字モードで印刷しました');
 });
 
 function countBufferOccurrences(buffer, needle) {

@@ -13,6 +13,7 @@ const TEXT_EXT_RE = /\.(txt|text|md|markdown|csv|tsv|json|jsonl|log|ini|conf|cfg
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]{}"']+/gi;
 const TEXT_FALLBACK_EMOJI = new Set([0x203c, 0x2049]);
 const INLINE_IMAGE_MARKER_RE = /^\u0000INLINEIMAGE:([^:\u0000]+):([^\u0000]*)\u0000$/;
+const INLINE_IMAGE_MARKERS_RE = /\u0000INLINEIMAGE:[^\u0000]*\u0000/g;
 const TEMPLATE_INCREMENT_RE = /\{\{increment:(\d+)\}\}/gi;
 const TEMPLATE_COPY_LIMIT = 100;
 
@@ -121,6 +122,9 @@ export async function buildPrintJob(message, config, options = {}) {
   const unsupportedChars = await collectJobUnsupportedCharacters(contentMessage, text, imageItems, config);
   const jobConfig = imageModeConfig(config, unsupportedChars);
   if (unsupportedChars.length > 0) warnings.push(imageModeWarning(unsupportedChars));
+  else if (imageItems.some((item) => item.source === 'emoji_inline') || valuesOf(message.stickers).length > 0) {
+    warnings.push(imageModeWarning([]));
+  }
   const imageState = createInlineImageState();
 
   await printTextBlock(printer, text, warnings, {
@@ -347,12 +351,14 @@ async function collectJobUnsupportedCharacters(message, primaryText, primaryImag
 }
 
 export function unsupportedPrinterCharacters(text) {
-  return [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(text)).replacements
+  const withoutInlineImages = String(text ?? '').replace(INLINE_IMAGE_MARKERS_RE, '');
+  return [...new Set(normalizePrinterTextDetailed(stripDiscordStyleMarkers(withoutInlineImages)).replacements
     .filter((item) => !isEquivalentPrinterReplacement(item))
     .map((item) => item.from))];
 }
 
 export function imageModeWarning(chars) {
+  if (!chars?.length) return '画像印字モードで印刷しました';
   return `"${chars[0]}"この文字ほか${Math.max(0, chars.length - 1)}文字は出せないため画像印字モードで印刷しました`;
 }
 
