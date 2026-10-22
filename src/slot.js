@@ -1,7 +1,19 @@
 import { MessageFlags } from 'discord.js';
 
-export const SLOT_EMOJI_LINE = '<a:enchant_ensan:1562641619960725565> <:ensan:1562641655079632916>';
-export const SLOT_SYMBOLS = Object.freeze(['ｳｽｲ', 'ｴﾝ', 'ｻﾝ', 'ﾘｭｳ', 'ﾁｬﾝ', 'ﾄ', 'ﾍｹ']);
+export const SLOT_STAMPS = Object.freeze([
+  '<a:enchant_ensan:1562641619960725565>',
+  '<:ensan:1562641655079632916>'
+]);
+export const SLOT_SYMBOLS = Object.freeze([
+  ...SLOT_STAMPS,
+  'ｳｽｲ',
+  'ｴﾝ',
+  'ｻﾝ',
+  'ﾘｭｳ',
+  'ﾁｬﾝ',
+  'ﾄ',
+  'ﾍｹ'
+]);
 const WINNING_SLOT = Object.freeze(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']);
 
 export function drawSlot(random = Math.random) {
@@ -12,7 +24,8 @@ export function drawSlot(random = Math.random) {
 }
 
 export function isWinningSlot(result) {
-  return WINNING_SLOT.every((symbol, index) => result[index] === symbol);
+  return WINNING_SLOT.every((symbol, index) => result[index] === symbol)
+    || (result.length === 3 && SLOT_STAMPS.includes(result[0]) && result.every((symbol) => symbol === result[0]));
 }
 
 export function buildSlotMessage(result) {
@@ -21,7 +34,6 @@ export function buildSlotMessage(result) {
   }
 
   const lines = [
-    SLOT_EMOJI_LINE,
     'エンサンチャンスロット',
     'ｴﾝｻﾝﾁｬﾝがそろうチャンスです',
     '今日はそろうかな？',
@@ -42,7 +54,7 @@ export function buildSlotMessage(result) {
   const reply = lines.join('\n');
   return {
     reply,
-    print: [SLOT_EMOJI_LINE, '!center', ...lines.slice(1)].join('\n')
+    print: ['!center', ...lines].join('\n')
   };
 }
 

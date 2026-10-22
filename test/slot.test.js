@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SLOT_EMOJI_LINE,
+  SLOT_STAMPS,
   SLOT_SYMBOLS,
   acknowledgeSlotInteraction,
   buildSlotMessage,
@@ -13,19 +13,24 @@ test('slot draw uses the configured symbols and recognizes the エンサンチ�
   const result = drawSlot(() => 0);
   assert.deepEqual(result, [SLOT_SYMBOLS[0], SLOT_SYMBOLS[0], SLOT_SYMBOLS[0]]);
   assert.equal(isWinningSlot(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']), true);
+  assert.equal(isWinningSlot([SLOT_STAMPS[0], SLOT_STAMPS[0], SLOT_STAMPS[0]]), true);
+  assert.equal(isWinningSlot([SLOT_STAMPS[1], SLOT_STAMPS[1], SLOT_STAMPS[1]]), true);
+  assert.equal(isWinningSlot([SLOT_STAMPS[0], SLOT_STAMPS[1], SLOT_STAMPS[0]]), false);
   assert.equal(isWinningSlot(['ｴﾝ', 'ｴﾝ', 'ﾁｬﾝ']), false);
+  assert.equal(isWinningSlot(['ﾍｹ', 'ﾍｹ', 'ﾍｹ']), false);
 });
 
-test('slot message changes only the final line for a winning result', () => {
+test('slot message treats text and repeated stamp patterns as winning results', () => {
   const losing = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾁｬﾝ']);
   const winning = buildSlotMessage(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']);
+  const stampWinning = buildSlotMessage([SLOT_STAMPS[0], SLOT_STAMPS[0], SLOT_STAMPS[0]]);
 
-  assert.match(losing.reply, new RegExp(SLOT_EMOJI_LINE));
   assert.match(losing.reply, /ﾁﾝｯ ﾍｹ/);
   assert.match(losing.reply, /またあした$/);
   assert.match(winning.reply, /ﾁﾝｯ ｴﾝ/);
   assert.match(winning.reply, /おめでとう！$/);
-  assert.match(winning.print, /^<a:enchant_ensan:1562641619960725565> <:ensan:1562641655079632916>\n!center/m);
+  assert.match(stampWinning.reply, new RegExp(`ﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\n\\nおめでとう！$`));
+  assert.match(stampWinning.print, new RegExp(`!center[\\s\\S]*ﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\n\\nおめでとう！$`));
 });
 
 test('slot interaction acknowledges before editing the public result', async () => {
