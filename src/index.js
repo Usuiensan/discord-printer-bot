@@ -33,6 +33,7 @@ import { acknowledgeSlotInteraction, buildSlotMessage, drawSlot } from './slot.j
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEQUENCE_STATE_PATH = join(__dirname, '..', 'run', 'print-sequence.json');
 const NEAR_END_PROBLEM = 'レシート用紙残量少';
+const HEADERLESS_AUTHOR_ID = '1531652909065048255';
 const SLOT_COMMAND = new SlashCommandBuilder()
   .setName('すろっと')
   .setDescription('えんさんちゃんスロット');
@@ -74,6 +75,7 @@ function enqueuePrint(message) {
     for (let copyIndex = 0; copyIndex < templateOptions.copies; copyIndex += 1) {
       const job = await buildPrintJob(message, config, {
         printHeader: !omitHeader,
+        omitHeader,
         printNumber,
         copyIndex
       });
@@ -152,7 +154,7 @@ function enqueueMemberJoinPrint(member) {
 function enqueueReprint(message, targetMessage) {
   return enqueuePrintJob(message, 'reprint', async () => {
     const templateOptions = parsePrintTemplateOptions(targetMessage.content ?? '', config.messageCommandPrefix);
-    const omitHeader = templateOptions.omitHeader;
+    const omitHeader = templateOptions.omitHeader || shouldOmitHeader(targetMessage);
     const printNumber = omitHeader ? null : await peekNextPrintNumber();
     let retryNotified = false;
     const warningSet = new Set();
@@ -162,6 +164,7 @@ function enqueueReprint(message, targetMessage) {
     for (let copyIndex = 0; copyIndex < templateOptions.copies; copyIndex += 1) {
       const job = await buildPrintJob(targetMessage, config, {
         printHeader: !omitHeader,
+        omitHeader,
         printNumber,
         copyIndex
       });
@@ -237,6 +240,7 @@ async function readPrintSequenceState() {
 }
 
 function shouldOmitHeader(message) {
+  if (message.author?.id === HEADERLESS_AUTHOR_ID) return true;
   if (!lastPrintedMessage) return false;
   if (lastPrintedMessage.authorId !== message.author.id) return false;
   if (lastPrintedMessage.channelId !== message.channelId) return false;

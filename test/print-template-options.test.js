@@ -50,6 +50,27 @@ test('noheader suppresses the avatar fallback as well as the author header', asy
   assert.deepEqual(job.warnings, []);
 });
 
+test('omitHeader option suppresses all headers without a template directive', async () => {
+  const job = await buildPrintJob(
+    {
+      ...message('本文だけ'),
+      author: {
+        username: '情報bot',
+        globalName: '情報bot',
+        displayAvatarURL() {
+          throw new Error('avatar should not be requested');
+        }
+      },
+      createdAt: new Date('2026-10-22T11:00:00+09:00')
+    },
+    { ...config, printAuthorAvatar: true },
+    { printHeader: false, omitHeader: true }
+  );
+
+  assert.deepEqual(job.warnings, []);
+  assert.equal(job.bytes.includes(iconv.encode('本文だけ', 'cp932')), true);
+});
+
 test('the same increment token is substituted consistently in text, barcodes, and previews', async () => {
   const content = [
     '!noheader',

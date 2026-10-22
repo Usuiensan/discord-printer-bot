@@ -92,7 +92,7 @@ export async function buildPrintJob(message, config, options = {}) {
   const warnings = [];
   const textPrintImages = [];
 
-  if (!templateOptions.omitHeader) {
+  if (!templateOptions.omitHeader && options.omitHeader !== true) {
     await appendDiscordHeader(printer, printableMessage, config, {
       printHeader: options.printHeader,
       printNumber: options.printNumber,
