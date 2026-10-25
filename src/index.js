@@ -9,6 +9,7 @@ import {
   MessageFlags,
   MessageType,
   Partials,
+  PermissionsBitField,
   SlashCommandBuilder
 } from 'discord.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -25,7 +26,7 @@ import {
   splitDiscordText,
   trimChatHistory
 } from './localLlm.js';
-import { checkPrinterProblems, sendRawToPrinter } from './printer.js';
+import { checkPrinterProblems, repairPrinterConnection, sendRawToPrinter, verifyPrinterCanBeEjected } from './printer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
 import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
@@ -41,6 +42,12 @@ const SLOT_COMMAND = new SlashCommandBuilder()
 const DRAWER_OPEN_COMMAND = new SlashCommandBuilder()
   .setName('drawer-open')
   .setDescription('キャッシュドロワーを開きます');
+const EJECT_COMMAND = new SlashCommandBuilder()
+  .setName('eject')
+  .setDescription('プリンターを安全に取り外せる状態にします');
+const FIX_COMMAND = new SlashCommandBuilder()
+  .setName('fix')
+  .setDescription('再接続したプリンターを復旧します');
 
 const client = new Client({
   intents: [
@@ -59,6 +66,7 @@ let printerMonitorTimer = null;
 let printerMonitorRunning = false;
 let printerMonitorPausedUntil = 0;
 let latestPrinterProblems = [];
+let printerEjected = false;
 const printerMonitorTracker = createPrinterMonitorTracker(config.printerMonitorFailureThreshold);
 const aiChatHistories = new Map();
 const aiChatQueues = new Map();
@@ -436,6 +444,11 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
+    if (printerEjected) {
+      await markPrintFailure(message, 'プリンターは取り外し準備中です。再接続後に /fix を実行してください。');
+      return;
+    }
+
     const reprintTarget = await parseReprintMessageCommand(message);
     if (reprintTarget) {
       await addReaction(message, '🖨️');
@@ -466,6 +479,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.commandName === 'drawer-open') {
       await handleDrawerOpenCommand(interaction);
+      return;
+    }
+    if (interaction.commandName === 'eject') {
+      await handleEjectCommand(interaction);
+      return;
+    }
+    if (interaction.commandName === 'fix') {
+      await handleFixCommand(interaction);
     }
     return;
   }
@@ -804,7 +825,7 @@ async function registerCommands(readyClient) {
       ? (await readyClient.guilds.fetch(config.guildId)).commands
       : readyClient.application.commands;
     const commands = await commandManager.fetch();
-    for (const commandDefinition of [SLOT_COMMAND, DRAWER_OPEN_COMMAND]) {
+    for (const commandDefinition of [SLOT_COMMAND, DRAWER_OPEN_COMMAND, EJECT_COMMAND, FIX_COMMAND]) {
       const existing = commands.find((command) => command.name === commandDefinition.name && command.type === 1);
       if (existing) {
         await commandManager.edit(existing.id, commandDefinition.toJSON());
@@ -819,6 +840,14 @@ async function registerCommands(readyClient) {
 }
 
 async function handleSlotCommand(interaction) {
+  if (printerEjected) {
+    await interaction.reply({
+      content: 'プリンターは取り外し準備中です。再接続後に /fix を実行してください。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
+    return;
+  }
+
   try {
     await acknowledgeSlotInteraction(interaction, buildSlotMessage(drawSlot()), enqueueSlotPrint);
   } catch (error) {
@@ -840,6 +869,14 @@ async function handleSlotCommand(interaction) {
 }
 
 async function handleDrawerOpenCommand(interaction) {
+  if (printerEjected) {
+    await interaction.reply({
+      content: 'プリンターは取り外し準備中です。再接続後に /fix を実行してください。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
+    return;
+  }
+
   try {
     await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
     const eventInfo = {
@@ -875,6 +912,72 @@ async function handleDrawerOpenCommand(interaction) {
       });
     }
   }
+}
+
+async function handleEjectCommand(interaction) {
+  if (!isPrinterAdmin(interaction)) {
+    await interaction.reply({
+      content: 'このコマンドは管理者だけが実行できます。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
+    return;
+  }
+
+  try {
+    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    if (printerEjected) {
+      await interaction.editReply('プリンターはすでに取り外し準備済みです。');
+      return;
+    }
+
+    printerEjected = true;
+    await queue;
+    const result = await verifyPrinterCanBeEjected(config.printerName, config);
+    await interaction.editReply(
+      `印刷キューを空にし、接続を解放しました。プリンターを取り外せます。状態: ${result.problems.join(' / ') || '正常'}`
+    );
+  } catch (error) {
+    printerEjected = false;
+    console.error(`Eject command failed for ${interaction.id}:`, error);
+    await interaction.editReply(withSilentFlags(withErrorMention({
+      content: `取り外し準備に失敗しました: ${error.message}`,
+      allowedMentions: { repliedUser: false }
+    })));
+  }
+}
+
+async function handleFixCommand(interaction) {
+  if (!isPrinterAdmin(interaction)) {
+    await interaction.reply({
+      content: 'このコマンドは管理者だけが実行できます。',
+      flags: MessageFlags.Ephemeral | MessageFlags.SuppressNotifications
+    });
+    return;
+  }
+
+  try {
+    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    const result = await repairPrinterConnection(config.printerName, config);
+    printerEjected = false;
+    printerMonitorPausedUntil = 0;
+    latestPrinterProblems = result.problems;
+    const deviceText = result.devicePath ? ` デバイス: ${result.devicePath}` : '';
+    await interaction.editReply(
+      `プリンター接続を復旧しました。状態: ${result.problems.join(' / ') || '正常'}${deviceText}`
+    );
+  } catch (error) {
+    printerEjected = true;
+    console.error(`Fix command failed for ${interaction.id}:`, error);
+    await interaction.editReply(withSilentFlags(withErrorMention({
+      content: `プリンターを復旧できませんでした: ${error.message}`,
+      allowedMentions: { repliedUser: false }
+    })));
+  }
+}
+
+function isPrinterAdmin(interaction) {
+  return config.rawEscposAdminUserIds.includes(interaction.user.id)
+    || interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator) === true;
 }
 
 async function openDrawer() {
@@ -1085,6 +1188,7 @@ function startPrinterMonitor(readyClient) {
 }
 
 async function checkAndNotifyPrinterStatus(readyClient) {
+  if (printerEjected) return;
   if (printerMonitorRunning) return;
   if (shouldPausePrinterMonitor({
     queuedPrintCount,

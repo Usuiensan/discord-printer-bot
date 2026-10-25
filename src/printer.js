@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -106,6 +106,32 @@ export async function checkPrinterProblems(printerName, options = {}) {
   }
 
   return checkLocalPrinterProblems(printerName, options);
+}
+
+export async function repairPrinterConnection(printerName, options = {}) {
+  if (resolvePrinterBackend(options) !== 'linux-usb') {
+    const problems = await checkPrinterProblems(printerName, options);
+    return { backend: resolvePrinterBackend(options), devicePath: null, problems };
+  }
+
+  const candidates = await linuxPrinterDeviceCandidates(options);
+  let lastError = null;
+  for (const devicePath of candidates) {
+    try {
+      const status = await getLinuxUsbPrinterStatus({ ...options, linuxPrinterDevice: devicePath });
+      options.linuxPrinterDevice = devicePath;
+      return { backend: 'linux-usb', devicePath, problems: describeEscposRealtimeStatus(status) };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(`Linux USBプリンターを検出できませんでした: ${lastError?.message ?? 'デバイスがありません'}`);
+}
+
+export async function verifyPrinterCanBeEjected(printerName, options = {}) {
+  const problems = await checkPrinterProblems(printerName, options);
+  return { backend: resolvePrinterBackend(options), problems };
 }
 
 export async function sendRawToLinuxUsbPrinter(bytes, options = {}) {
@@ -237,6 +263,20 @@ function describeEscposRealtimeStatus(status) {
 
 function resolveLinuxPrinterDevice(options = {}) {
   return options.linuxPrinterDevice || '/dev/usb/lp0';
+}
+
+export async function linuxPrinterDeviceCandidates(options = {}) {
+  const configured = resolveLinuxPrinterDevice(options);
+  const candidates = [configured];
+  try {
+    const names = await readdir('/dev/usb');
+    for (const name of names.sort()) {
+      if (/^lp\d+$/.test(name)) candidates.push(`/dev/usb/${name}`);
+    }
+  } catch {
+    // The configured path is still useful when /dev/usb is unavailable.
+  }
+  return Array.from(new Set(candidates));
 }
 
 async function checkPrintBridgeProblems(printerName, options) {
