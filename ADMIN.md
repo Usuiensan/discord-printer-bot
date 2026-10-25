@@ -6,41 +6,25 @@ Epson TM-T70II 58mm 幅プリンタへ、Discord の指定チャンネル投稿�
 
 ## 構成
 
-推奨構成は Proxmox 上の Debian 13 standard CT だけで bot と印刷を動かす構成です。
+本番構成は Proxmox 上の Debian 13 standard CT だけで bot と印刷を動かす構成です。
 
 - Debian 13 standard CT: Discord bot 本体を常駐
 - Epson TM-T70II: Debian CT に USB パススルー
 - 印刷: `/dev/usb/lp0` などへ RAW ESC/POS を送信
 - 状態監視: ESC/POS リアルタイムステータスで紙切れ、カバーオープン、ニアエンド等を検出
 
-Windows VM + OPOS 印刷ブリッジ構成も代替として残せますが、通常は `PRINTER_BACKEND=linux-usb` を推奨します。
+Windows上のBotおよびWindows印刷ブリッジは本番構成として使用しません。
 
 詳しい構築手順は [PROXMOX.md](PROXMOX.md) を参照してください。
 
-単体 Windows PC 上で bot も印刷も実行する旧構成も引き続き利用できます。
-
-## 単体 Windows 構成の前提
-
-- Windows PC
-- Node.js 20 以上
-- Epson TM-T70II が USB 接続され、Windows の「プリンターとスキャナー」に登録済み
-- Discord Developer Portal で作成した bot
-- bot の `MESSAGE CONTENT INTENT` と `SERVER MEMBERS INTENT` が有効
-
 ## セットアップ
 
-```powershell
+```bash
 npm install
-Copy-Item .env.example .env
+cp .env.example .env
 ```
 
-もし `npm install` で `Cannot find module ... npm-cli.js` が出る場合は、PC の npm インストールが壊れています。Node.js 公式インストーラで Node.js を修復インストールしてから、もう一度 `npm install` を実行してください。
-
-プリンタ名は PowerShell で確認できます。
-
-```powershell
-Get-Printer | Select-Object Name
-```
+もし `npm install` で `Cannot find module ... npm-cli.js` が出る場合は、Debian CTのNode.js/npmを修復してから、もう一度 `npm install` を実行してください。
 
 ## .env 設定
 
@@ -51,12 +35,7 @@ Get-Printer | Select-Object Name
 - `DISCORD_CHANNEL_ID`: 後方互換用の単一チャンネルID。`DISCORD_CHANNEL_IDS`と併用した場合も監視対象へ追加
 - `PRINTER_MONITOR_CHANNEL_ID`: 紙切れなどのプリンター状態通知先。省略時は最初の監視チャンネル
 - `DISCORD_GUILD_ID`: 任意。設定するとスラッシュコマンドがそのサーバーへ即時登録されます
-- `PRINTER_BACKEND`: `windows`、`bridge`、`linux-usb`。Debian CT 単体構成は `linux-usb`
-- `PRINTER_NAME`: Windows のプリンタ名。`PRINTER_BACKEND=linux-usb` では不要
-- `PRINT_BRIDGE_URL`: Debian bot から Windows 印刷ブリッジへ送る場合の URL。例: `http://192.168.1.50:8787`
-- `PRINT_BRIDGE_TOKEN`: 印刷ブリッジの bearer token。Windows 側と同じ値にします
-- `PRINT_BRIDGE_HOST`: Windows 印刷ブリッジの待受アドレス。通常 `0.0.0.0`
-- `PRINT_BRIDGE_PORT`: Windows 印刷ブリッジの待受ポート。通常 `8787`
+- `PRINTER_BACKEND`: 本番では `linux-usb`
 - `LINUX_PRINTER_DEVICE`: Debian CT で使う USB プリンタデバイス。通常 `/dev/usb/lp0`
 - `LINUX_STATUS_ENABLED`: `linux-usb` で ESC/POS リアルタイムステータス監視を行うか
 - `LINUX_STATUS_TIMEOUT_MS`: Linux USB ステータス応答待ち時間
@@ -67,9 +46,6 @@ Get-Printer | Select-Object Name
 - `PRINTER_MONITOR_FAILURE_THRESHOLD`: 何回連続で異常を検出したら通知するか。既定値は3回
 - `PRINTER_MONITOR_POST_PRINT_PAUSE_MS`: 印刷完了後に状態監視を止める時間。既定値は5000ms
 - `MEMBER_JOIN_PRINT_ENABLED`: 新しいメンバーがサーバーへ参加した時にレシートを印刷するか
-- `OPOS_STATUS_ENABLED`: OPOS ADK for .NET でプリンタ状態を確認するか
-- `OPOS_LOGICAL_NAME`: SetupPOS で登録した論理デバイス名
-- `OPOS_CLAIM_TIMEOUT_MS`: OPOS Claim の待ち時間
 - `PRINT_WIDTH_DOTS`: 印字幅。TM-T70II 58mm は通常 `384`
 - `CUT_MODE`: `none`、`partial`、`partial3`、`full`。通常は `partial` 推奨
 - `CUT_FEED_LINES`: `!cut`とReceiptLineの途中カット前後に送る行数。既定値は`3`
@@ -121,14 +97,8 @@ Get-Printer | Select-Object Name
 
 ## 実行
 
-```powershell
+```bash
 npm start
-```
-
-Windows VM で印刷ブリッジだけを起動する場合:
-
-```powershell
-npm run bridge
 ```
 
 Debian CT で USB プリンタ状態を単体確認する場合:
@@ -139,7 +109,7 @@ npm run linux:status
 
 構文確認:
 
-```powershell
+```bash
 node --check src/index.js
 node --check src/discordContent.js
 node --check src/symbolContent.js
@@ -149,51 +119,8 @@ node --check src/escpos.js
 
 `npm run check` が使える環境では、まとめて確認できます。
 
-```powershell
+```bash
 npm run check
-```
-
-## Windows 起動時に非表示で常駐
-
-ログオン時に bot を非表示で起動するタスクを登録できます。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-startup-task.ps1
-```
-
-すぐに非表示起動したい場合:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\start-bot-hidden.ps1
-```
-
-停止:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\stop-bot.ps1
-```
-
-自動起動を解除して、起動中の bot も止める場合:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\uninstall-startup-task.ps1 -StopBot
-```
-
-ログは `logs\discord-printer-bot.out.log` と `logs\discord-printer-bot.err.log` に出力されます。
-
-## OPOS ADK for .NET 状態確認
-
-紙切れやカバーオープンをより確実に検出したい場合は、EPSON OPOS ADK for .NET をインストールし、SetupPOS で TM-T70II を登録してください。登録した論理デバイス名を `.env` に設定します。
-
-```env
-OPOS_STATUS_ENABLED=true
-OPOS_LOGICAL_NAME=TM-T70II
-```
-
-単体確認:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\opos-status.ps1 -LogicalName "TM-T70II"
 ```
 
 ## プリンタ状態通知

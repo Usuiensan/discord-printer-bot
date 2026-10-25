@@ -24,10 +24,10 @@
 | バックエンド | 経路 | 主な用途 |
 | --- | --- | --- |
 | `linux-usb` | Debian Bot → `/dev/usb/lp0` など | 通常運用。構成が単純 |
-| `bridge` | Debian Bot → HTTP → Windows印刷ブリッジ → Windowsプリンター | OPOSやWindowsドライバーが必要な場合 |
-| `windows` | Windows Bot → Windowsプリンター | Bot自体をWindowsで動かす場合 |
+| `bridge` | Debian Bot → HTTP → Windows印刷ブリッジ → Windowsプリンター | 旧構成。現在の本番では使用しない |
+| `windows` | Windows Bot → Windowsプリンター | 旧構成。現在の本番では使用しない |
 
-新規構成では、USBパススルーと双方向通信が安定するなら `linux-usb` が扱いやすい構成です。Windows固有のOPOS状態取得が必要な場合だけ `bridge` を選びます。
+本番は `linux-usb` に固定します。Windows側のBot起動や印刷ブリッジへの切り替えを本番手順として扱いません。
 
 バックエンドを切り替えるときは、Botの設定だけでなく、状態取得の経路も同時に切り替わることに注意します。
 
@@ -150,12 +150,6 @@ LINUX_STATUS_TIMEOUT_MS=1000
 ```
 
 状態取得だけが不安定な場合は、切り分けのため一時的に `LINUX_STATUS_ENABLED=false` にできます。ただし、紙切れやカバーオープンを印刷前に検出できなくなります。恒久対策はUSB双方向通信を直すことです。
-
-### WindowsとOPOS
-
-Windowsでは、通常のプリンターキュー状態に加え、EPSON OPOS ADK for .NETからカバー、用紙切れ、ニアエンドを取得できます。
-
-OPOSはデバイスを排他的にClaimするため、別プロセスが使用中だと状態確認自体が失敗します。印刷処理との競合は、一時的なビジーと物理エラーを分けて扱います。
 
 ### 状態の分類
 

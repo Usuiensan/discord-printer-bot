@@ -227,26 +227,9 @@ sudo journalctl -u discord-printer-bot -f
 
 JavaPOS が安定して使える場合でも、bot 側の印刷データは引き続き ESC/POS で生成します。JavaPOS は状態監視の代替候補として扱います。
 
-## Windows VM ブリッジを残す代替構成
+## 本番構成の固定
 
-Windows VM で OPOS ADK for .NET を使う既存構成も残せます。その場合:
-
-Debian 側:
-
-```env
-PRINTER_BACKEND=bridge
-PRINTER_NAME=EPSON TM-T70II Receipt
-PRINT_BRIDGE_URL=http://192.168.1.50:8787
-PRINT_BRIDGE_TOKEN=長いランダム文字列
-```
-
-Windows 側:
-
-```powershell
-npm run bridge
-```
-
-通常は Debian CT 単体の `PRINTER_BACKEND=linux-usb` を推奨します。Windows 固有の OPOS 検証が必要な場合だけ bridge 構成を使います。
+本番BotはDebian CT内で実行し、`PRINTER_BACKEND=linux-usb`でUSBプリンターへ接続します。Windows上でBotまたは印刷ブリッジを起動する手順は本番運用に含めません。
 
 ## 運用メモ
 
