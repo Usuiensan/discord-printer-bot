@@ -341,11 +341,9 @@ function imageModeConfig(config, unsupportedChars) {
 
 async function collectJobUnsupportedCharacters(message, primaryText, primaryImageItems, config) {
   const texts = [primaryText, ...primaryImageItems.map((item) => item.label ?? '')];
-  texts.push(...valuesOf(message.stickers).map((sticker) => `[スタンプ: ${sticker.name ?? ''}]`));
   for (const snapshot of valuesOf(message.messageSnapshots)) {
     const extracted = await extractMessageContent(snapshot, config);
     texts.push(extracted.text, ...extracted.imageItems.map((item) => item.label ?? ''));
-    texts.push(...valuesOf(snapshot.stickers).map((sticker) => `[スタンプ: ${sticker.name ?? ''}]`));
   }
   return unsupportedPrinterCharacters(texts.join('\n'));
 }
@@ -476,7 +474,7 @@ async function buildPreviewRows(message, config) {
   }
 
   for (const sticker of valuesOf(message.stickers)) {
-    lines.push(previewLine(`[スタンプ: ${sticker.name ?? sticker.id}]`));
+    lines.push(previewLine('[スタンプ画像]'));
   }
 
   lines.push(...formatSymbolPreviewLines(symbolExtraction.commands).map((line) => previewLine(line)));
@@ -1764,16 +1762,9 @@ async function printStickers(printer, message, config, warnings, textPrintImages
     const url = sticker.url;
     if (!url) continue;
     try {
-      await printTextBlock(printer, `[スタンプ: ${sticker.name}]`, warnings, {
-        config,
-        prefix: config.messageCommandPrefix,
-        imageItems: [],
-        imageState: createInlineImageState(),
-        textPrintImages
-      });
       const bytes = await fetchImage(url, config);
       await printer.image(bytes, {
-        maxWidth: Math.min(config.printWidthDots, 256),
+        maxWidth: config.printWidthDots,
         dither: config.imageDitherMode,
       });
     } catch (error) {
