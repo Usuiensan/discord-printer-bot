@@ -25,7 +25,7 @@ export function drawSlot(random = Math.random) {
 
 export function isWinningSlot(result) {
   return WINNING_SLOT.every((symbol, index) => result[index] === symbol)
-    || (result.length === 3 && SLOT_STAMPS.includes(result[0]) && result.every((symbol) => symbol === result[0]));
+    || (result.length === 3 && result.every((symbol) => symbol === result[0]));
 }
 
 export function buildSlotMessage(result) {

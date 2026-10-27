@@ -9,7 +9,7 @@ import {
   isWinningSlot
 } from '../src/slot.js';
 
-test('slot draw uses the configured symbols and recognizes the エンサンチャン sequence', () => {
+test('slot draw uses the configured symbols and recognizes winning patterns', () => {
   const result = drawSlot(() => 0);
   assert.deepEqual(result, [SLOT_SYMBOLS[0], SLOT_SYMBOLS[0], SLOT_SYMBOLS[0]]);
   assert.equal(isWinningSlot(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']), true);
@@ -17,12 +17,13 @@ test('slot draw uses the configured symbols and recognizes the エンサンチ�
   assert.equal(isWinningSlot([SLOT_STAMPS[1], SLOT_STAMPS[1], SLOT_STAMPS[1]]), true);
   assert.equal(isWinningSlot([SLOT_STAMPS[0], SLOT_STAMPS[1], SLOT_STAMPS[0]]), false);
   assert.equal(isWinningSlot(['ｴﾝ', 'ｴﾝ', 'ﾁｬﾝ']), false);
-  assert.equal(isWinningSlot(['ﾍｹ', 'ﾍｹ', 'ﾍｹ']), false);
+  assert.equal(isWinningSlot(['ﾍｹ', 'ﾍｹ', 'ﾍｹ']), true);
 });
 
-test('slot message treats text and repeated stamp patterns as winning results', () => {
+test('slot message treats sequence, repeated text, and repeated stamp patterns as winning results', () => {
   const losing = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾁｬﾝ']);
   const winning = buildSlotMessage(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']);
+  const textWinning = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾍｹ']);
   const stampWinning = buildSlotMessage([SLOT_STAMPS[0], SLOT_STAMPS[0], SLOT_STAMPS[0]]);
 
   assert.match(losing.reply, /ﾁﾝｯ ﾍｹ/);
@@ -32,6 +33,8 @@ test('slot message treats text and repeated stamp patterns as winning results', 
   assert.equal(losing.winning, false);
   assert.equal(winning.winning, true);
   assert.doesNotMatch(winning.print, /!drawer/);
+  assert.match(textWinning.reply, /おめでとう！$/);
+  assert.equal(textWinning.winning, true);
   assert.match(stampWinning.reply, new RegExp(`ﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\nﾁﾝｯ ${SLOT_STAMPS[0]}\\n\\nおめでとう！$`));
   assert.equal(stampWinning.winning, true);
   assert.doesNotMatch(stampWinning.print, /!drawer/);
