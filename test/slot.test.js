@@ -58,5 +58,21 @@ test('slot interaction acknowledges before editing the public result', async () 
   assert.equal(calls[0], 'defer');
   assert.equal(calls[1][0], 'edit');
   assert.equal(calls[1][2], MessageFlags.SuppressNotifications);
-  assert.deepEqual(calls[2], ['print', false]);
+  assert.equal(calls.length, 2);
+});
+
+test('winning slot enqueues a print job', async () => {
+  const calls = [];
+  const interaction = {
+    async deferReply() {},
+    async editReply() {}
+  };
+
+  await acknowledgeSlotInteraction(
+    interaction,
+    buildSlotMessage(['ｴﾝ', 'ｻﾝ', 'ﾁｬﾝ']),
+    (_interaction, _content, winning) => calls.push(winning)
+  );
+
+  assert.deepEqual(calls, [true]);
 });

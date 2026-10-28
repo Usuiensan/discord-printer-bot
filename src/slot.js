@@ -67,5 +67,5 @@ export async function acknowledgeSlotInteraction(interaction, result, enqueuePri
     flags: MessageFlags.SuppressNotifications,
     allowedMentions: { repliedUser: false }
   });
-  enqueuePrint(interaction, result.print, result.winning);
+  if (result.winning) enqueuePrint(interaction, result.print, result.winning);
 }
