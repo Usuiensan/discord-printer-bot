@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { MessageFlags } from 'discord.js';
 import {
   SLOT_STAMPS,
   SLOT_SYMBOLS,
@@ -47,7 +48,7 @@ test('slot interaction acknowledges before editing the public result', async () 
       calls.push('defer');
     },
     async editReply(payload) {
-      calls.push(['edit', payload.content]);
+      calls.push(['edit', payload.content, payload.flags]);
     }
   };
   const result = buildSlotMessage(['ﾍｹ', 'ﾍｹ', 'ﾁｬﾝ']);
@@ -56,5 +57,6 @@ test('slot interaction acknowledges before editing the public result', async () 
 
   assert.equal(calls[0], 'defer');
   assert.equal(calls[1][0], 'edit');
+  assert.equal(calls[1][2], MessageFlags.SuppressNotifications);
   assert.deepEqual(calls[2], ['print', false]);
 });

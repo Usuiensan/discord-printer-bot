@@ -64,6 +64,7 @@ export async function acknowledgeSlotInteraction(interaction, result, enqueuePri
   await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
   await interaction.editReply({
     content: result.reply,
+    flags: MessageFlags.SuppressNotifications,
     allowedMentions: { repliedUser: false }
   });
   enqueuePrint(interaction, result.print, result.winning);
