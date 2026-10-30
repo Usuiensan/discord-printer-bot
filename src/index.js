@@ -878,7 +878,13 @@ async function handleDrawerOpenCommand(interaction) {
   }
 
   try {
-    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    // Reply first with the silent flag in place: SuppressNotifications is
+    // ignored on deferred replies, so the placeholder must be a real reply.
+    await interaction.reply({
+      content: 'ドロワーを開いています…',
+      flags: MessageFlags.SuppressNotifications,
+      allowedMentions: { repliedUser: false }
+    });
     const eventInfo = {
       id: `drawer-${interaction.id}`,
       author: interaction.user,
@@ -924,7 +930,12 @@ async function handleEjectCommand(interaction) {
   }
 
   try {
-    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    // Reply first with the silent flag in place (ignored on deferred replies).
+    await interaction.reply({
+      content: 'プリンターの取り外し準備をしています…',
+      flags: MessageFlags.SuppressNotifications,
+      allowedMentions: { repliedUser: false }
+    });
     if (printerEjected) {
       await interaction.editReply('プリンターはすでに取り外し準備済みです。');
       return;
@@ -956,7 +967,12 @@ async function handleFixCommand(interaction) {
   }
 
   try {
-    await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
+    // Reply first with the silent flag in place (ignored on deferred replies).
+    await interaction.reply({
+      content: 'プリンター接続を復旧しています…',
+      flags: MessageFlags.SuppressNotifications,
+      allowedMentions: { repliedUser: false }
+    });
     const result = await repairPrinterConnection(config.printerName, config);
     printerEjected = false;
     printerMonitorPausedUntil = 0;
