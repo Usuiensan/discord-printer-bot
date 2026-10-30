@@ -41,11 +41,14 @@ test('slot message treats sequence, repeated text, and repeated stamp patterns a
   assert.doesNotMatch(stampWinning.print, /!drawer/);
 });
 
-test('slot interaction acknowledges before editing the public result', async () => {
+test('slot interaction replies once with a silent public result', async () => {
   const calls = [];
   const interaction = {
     async deferReply() {
       calls.push('defer');
+    },
+    async reply(payload) {
+      calls.push(['reply', payload.content, payload.flags]);
     },
     async editReply(payload) {
       calls.push(['edit', payload.content, payload.flags]);
@@ -55,17 +58,18 @@ test('slot interaction acknowledges before editing the public result', async () 
 
   await acknowledgeSlotInteraction(interaction, result, (_interaction, _content, winning) => calls.push(['print', winning]));
 
-  assert.equal(calls[0], 'defer');
-  assert.equal(calls[1][0], 'edit');
-  assert.equal(calls[1][2], MessageFlags.SuppressNotifications);
-  assert.equal(calls.length, 2);
+  // Deferred replies ignore SuppressNotifications, so the result must be a
+  // single direct reply carrying the flag (no defer, no edit).
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'reply');
+  assert.equal(calls[0][1], result.reply);
+  assert.equal(calls[0][2], MessageFlags.SuppressNotifications);
 });
 
 test('winning slot enqueues a print job', async () => {
   const calls = [];
   const interaction = {
-    async deferReply() {},
-    async editReply() {}
+    async reply() {}
   };
 
   await acknowledgeSlotInteraction(

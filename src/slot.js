@@ -61,8 +61,10 @@ export function buildSlotMessage(result) {
 }
 
 export async function acknowledgeSlotInteraction(interaction, result, enqueuePrint) {
-  await interaction.deferReply({ flags: MessageFlags.SuppressNotifications });
-  await interaction.editReply({
+  // SuppressNotifications is ignored on deferred replies (the flag is only
+  // honored when the message is created), so reply directly instead of
+  // deferring: the slot result is computed synchronously.
+  await interaction.reply({
     content: result.reply,
     flags: MessageFlags.SuppressNotifications,
     allowedMentions: { repliedUser: false }
