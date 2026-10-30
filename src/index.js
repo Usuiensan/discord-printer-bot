@@ -27,6 +27,7 @@ import {
   trimChatHistory
 } from './localLlm.js';
 import { checkPrinterProblems, repairPrinterConnection, sendRawToPrinter, verifyPrinterCanBeEjected } from './printer.js';
+import { startPrintServer } from './printServer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
 import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
@@ -412,8 +413,26 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Printer: ${config.printerName}`);
   console.log(`OPOS status: ${config.oposStatusEnabled ? `enabled (${config.oposLogicalName || 'no logical name'})` : 'disabled'}`);
   await registerCommands(readyClient);
+  await startEmbeddedPrintServer();
   startPrinterMonitor(readyClient);
 });
+
+async function startEmbeddedPrintServer() {
+  if (!config.printServerEnabled) return;
+  try {
+    await startPrintServer({
+      host: config.printServerHost,
+      port: config.printServerPort,
+      token: config.printServerToken,
+      print: async (bytes) => {
+        await sendRawToPrinter(bytes, config.printerName, config);
+        printerMonitorPausedUntil = Date.now() + config.printerMonitorPostPrintPauseMs;
+      }
+    });
+  } catch (error) {
+    console.error(`Failed to start embedded print server on http://${config.printServerHost}:${config.printServerPort}:`, error);
+  }
+}
 
 client.on(Events.MessageCreate, async (message) => {
   if (isOwnBotMessage(message)) {
