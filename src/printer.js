@@ -40,7 +40,15 @@ const LINUX_STATUS_REQUESTS = [
   ['paper', 4]
 ];
 
+let printQueue = Promise.resolve();
+
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
+  const print = printQueue.then(() => sendRawToPrinterNow(bytes, printerName, options));
+  printQueue = print.catch(() => {});
+  return print;
+}
+
+async function sendRawToPrinterNow(bytes, printerName, options = {}) {
   const backend = resolvePrinterBackend(options);
   if (backend === 'bridge') {
     await sendRawToPrintBridge(bytes, printerName, options);
