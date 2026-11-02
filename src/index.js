@@ -26,7 +26,7 @@ import {
   splitDiscordText,
   trimChatHistory
 } from './localLlm.js';
-import { checkPrinterProblems, repairPrinterConnection, sendRawToPrinter, verifyPrinterCanBeEjected } from './printer.js';
+import { checkPrinterProblems, isPrintInProgress, repairPrinterConnection, sendRawToPrinter, verifyPrinterCanBeEjected } from './printer.js';
 import { startPrintServer } from './printServer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
 import { isOwnBotMessage } from './messageFilters.js';
@@ -1225,6 +1225,7 @@ function startPrinterMonitor(readyClient) {
 async function checkAndNotifyPrinterStatus(readyClient) {
   if (printerEjected) return;
   if (printerMonitorRunning) return;
+  if (isPrintInProgress()) return;
   if (shouldPausePrinterMonitor({
     queuedPrintCount,
     pausedUntil: printerMonitorPausedUntil

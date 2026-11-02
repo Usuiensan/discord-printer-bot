@@ -42,8 +42,21 @@ const LINUX_STATUS_REQUESTS = [
 
 let printQueue = Promise.resolve();
 
+let activePrintCount = 0;
+
+export function isPrintInProgress() {
+  return activePrintCount > 0;
+}
+
 export async function sendRawToPrinter(bytes, printerName, options = {}) {
-  const print = printQueue.then(() => sendRawToPrinterNow(bytes, printerName, options));
+  const print = printQueue.then(async () => {
+    activePrintCount += 1;
+    try {
+      return await sendRawToPrinterNow(bytes, printerName, options);
+    } finally {
+      activePrintCount -= 1;
+    }
+  });
   printQueue = print.catch(() => {});
   return print;
 }
@@ -220,7 +233,7 @@ async function getLinuxUsbPrinterStatus(options = {}) {
   const devicePath = resolveLinuxPrinterDevice(options);
   const timeoutMs = Math.max(100, Number.parseInt(options.linuxStatusTimeoutMs ?? 1000, 10) || 1000);
   const flags = fsConstants.O_RDWR | fsConstants.O_NONBLOCK;
-  const handle = await open(devicePath, flags);
+  const handle = await openPrinterDevice(devicePath, flags);
   try {
     const status = {};
     for (const [name, request] of LINUX_STATUS_REQUESTS) {
@@ -229,6 +242,19 @@ async function getLinuxUsbPrinterStatus(options = {}) {
     return status;
   } finally {
     await handle.close();
+  }
+}
+
+async function openPrinterDevice(devicePath, flags) {
+  // usblp は同時オープンを1つしか許さないため、監視チェック等との
+  // 一瞬の競合 (EBUSY) では即オフライン扱いにせず短くリトライする。
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await open(devicePath, flags);
+    } catch (error) {
+      if (error?.code !== 'EBUSY' || attempt >= 10) throw error;
+      await sleep(150);
+    }
   }
 }
 
