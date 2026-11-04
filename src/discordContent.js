@@ -88,7 +88,7 @@ export async function buildPrintJob(message, config, options = {}) {
     return buildNotePrintJob(noteCommand, config);
   }
 
-  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
   const warnings = [];
   const textPrintImages = [];
 
@@ -192,7 +192,7 @@ export function parseNoteMessageCommand(content, prefix = '!') {
 }
 
 async function buildNotePrintJob(noteCommand, config) {
-  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
   const printImages = [];
   const segments = splitNoteCutCommands(noteCommand.text);
 
@@ -361,7 +361,7 @@ export function imageModeWarning(chars) {
 }
 
 export async function buildMemberJoinPrintJob(member, config, options = {}) {
-  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
   const warnings = [];
   const joinedAt = new Date();
   const headerMessage = {

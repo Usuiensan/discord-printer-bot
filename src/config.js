@@ -96,6 +96,7 @@ export const config = {
   oposClaimTimeoutMs: intEnv('OPOS_CLAIM_TIMEOUT_MS', 1000),
   printWidthDots: intEnv('PRINT_WIDTH_DOTS', 384),
   cutAfterPrint: boolEnv('CUT_AFTER_PRINT', true),
+  printRotate180: boolEnv('PRINT_ROTATE_180', false),
   cutMode: optionalEnv('CUT_MODE', boolEnv('CUT_AFTER_PRINT', true) ? 'partial' : 'none'),
   printHeader: boolEnv('PRINT_HEADER', true),
   mergeSameUserWindowMs: intEnv('MERGE_SAME_USER_WINDOW_MS', 3000),
