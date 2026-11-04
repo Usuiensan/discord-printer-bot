@@ -17,16 +17,31 @@ const BAYER_8X8 = [
 ];
 
 export class EscPosBuilder {
-  constructor({ widthDots = 384 } = {}) {
+  constructor({ widthDots = 384, rotate180 = false } = {}) {
     this.widthDots = widthDots;
+    this.rotate180 = rotate180;
     this.parts = [];
-    this.raw(Buffer.from([ESC, 0x40]));
-    this.raw(Buffer.from([ESC, 0x33, 24]));
-    this.enableJapaneseMode();
+    if (rotate180) {
+      this.head = [];
+      this.segments = [];
+      this.pending = [];
+      this.tail = [];
+      this.head.push(Buffer.from([ESC, 0x40]));
+      this.head.push(Buffer.from([ESC, 0x33, 24]));
+      this.head.push(Buffer.from([ESC, 0x52, 8]));
+      this.head.push(Buffer.from([FS, 0x43, 1]));
+      this.head.push(Buffer.from([FS, 0x26]));
+    } else {
+      this.raw(Buffer.from([ESC, 0x40]));
+      this.raw(Buffer.from([ESC, 0x33, 24]));
+      this.enableJapaneseMode();
+    }
   }
 
   raw(buffer) {
-    this.parts.push(Buffer.from(buffer));
+    const copy = Buffer.from(buffer);
+    if (this.rotate180) this.pending.push(copy);
+    else this.parts.push(copy);
     return this;
   }
 
@@ -47,6 +62,7 @@ export class EscPosBuilder {
     this.raw(Buffer.from([ESC, 0x40]));
     this.raw(Buffer.from([ESC, 0x33, 24]));
     this.enableJapaneseMode();
+    if (this.rotate180) this.raw(Buffer.from([ESC, 0x7b, 1]));
     return this;
   }
 
@@ -73,6 +89,7 @@ export class EscPosBuilder {
   }
 
   upsideDown(enabled) {
+    if (this.rotate180) return this;
     this.raw(Buffer.from([ESC, 0x7b, enabled ? 1 : 0]));
     return this;
   }
@@ -167,7 +184,12 @@ export class EscPosBuilder {
   }
 
   feed(lines = 1) {
-    this.raw(Buffer.alloc(Math.max(0, lines), LF));
+    const count = Math.max(0, lines);
+    this.raw(Buffer.alloc(count, LF));
+    if (this.rotate180 && count >= 1) {
+      this.segments.push(this.pending);
+      this.pending = [];
+    }
     return this;
   }
 
@@ -284,6 +306,15 @@ export class EscPosBuilder {
   }
 
   cutCommand(mode = 'partial') {
+    const command = mode === 'full'
+      ? Buffer.from([GS, 0x56, 0x41, 0])
+      : mode === 'partial3'
+        ? Buffer.from([ESC, 0x6d])
+        : Buffer.from([ESC, 0x69]);
+    if (this.rotate180) {
+      this.tail.push(command);
+      return this;
+    }
     if (mode === 'full') {
       this.raw(Buffer.from([GS, 0x56, 0x41, 0]));
     } else if (mode === 'partial3') {
@@ -474,12 +505,13 @@ export class EscPosBuilder {
       .toBuffer({ resolveWithObject: true });
 
     const { data, info } = png;
+    const pixels = this.rotate180 ? rotatePixels180(data, info.width, info.height) : data;
     const widthBytes = Math.ceil(info.width / 8);
     const raster = Buffer.alloc(widthBytes * info.height, 0x00);
 
     for (let y = 0; y < info.height; y += 1) {
       for (let x = 0; x < info.width; x += 1) {
-        const pixel = data[y * info.width + x];
+        const pixel = pixels[y * info.width + x];
         if (shouldPrintBlack(pixel, x, y, dither, threshold)) {
           const byteIndex = y * widthBytes + Math.floor(x / 8);
           raster[byteIndex] |= 0x80 >> (x % 8);
@@ -504,11 +536,21 @@ export class EscPosBuilder {
     const feedLines = Math.max(0, Number.parseInt(lines, 10) || 0);
     this.feed(feedLines);
     if (mode !== 'none') this.cutCommand(mode);
-    this.feed(feedLines);
+    if (this.rotate180) this.tail.push(Buffer.alloc(feedLines, LF));
+    else this.feed(feedLines);
     return this;
   }
 
   build() {
+    if (this.rotate180) {
+      const segments = this.pending.length > 0 ? [...this.segments, this.pending] : this.segments;
+      return Buffer.concat([
+        ...this.head,
+        Buffer.from([ESC, 0x7b, 1]),
+        ...segments.slice().reverse().flat(),
+        ...this.tail
+      ]);
+    }
     return Buffer.concat(this.parts);
   }
 }
@@ -671,4 +713,14 @@ function shouldPrintBlack(pixel, x, y, dither, configuredThreshold = 170) {
 
   const threshold = ((BAYER_8X8[y % 8][x % 8] + 0.5) / 64) * 255;
   return pixel < threshold;
+}
+
+function rotatePixels180(data, width, height) {
+  const rotated = Buffer.alloc(data.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      rotated[(height - 1 - y) * width + (width - 1 - x)] = data[y * width + x];
+    }
+  }
+  return rotated;
 }

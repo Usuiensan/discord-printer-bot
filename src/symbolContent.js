@@ -53,7 +53,7 @@ const ROTATED_BARCODE_MAX_LENGTH_DOTS = 2048;
 
 export async function buildSymbolPrintJob(commands, config, options = {}) {
   const items = Array.isArray(commands) ? commands : [commands];
-  const printer = new EscPosBuilder({ widthDots: config.printWidthDots });
+  const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
   const warnings = [];
 
   if (options.requestedBy) printer.line(options.requestedBy);
