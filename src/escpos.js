@@ -23,7 +23,7 @@ export class EscPosBuilder {
     this.parts = [];
     if (rotate180) {
       this.head = [];
-      this.groups = [{ segments: [], cut: null }];
+      this.groups = [{ segments: [], cut: null, preCutFeed: 0 }];
       this.pending = [];
       this.pageBlock = null;
       this.head.push(Buffer.from([ESC, 0x40]));
@@ -310,7 +310,12 @@ export class EscPosBuilder {
       return this;
     }
 
-    this.feed(3);
+    if (this.rotate180) {
+      this.groups.at(-1).preCutFeed = 4;
+      return this.cutCommand(mode);
+    }
+
+    this.feed(4);
     return this.cutCommand(mode);
   }
 
@@ -326,7 +331,7 @@ export class EscPosBuilder {
         this.pending = [];
       }
       this.groups.at(-1).cut = command;
-      this.groups.push({ segments: [], cut: null });
+      this.groups.push({ segments: [], cut: null, preCutFeed: 0 });
       return this;
     }
     if (mode === 'full') {
@@ -548,6 +553,13 @@ export class EscPosBuilder {
 
   cutWithFeed(mode = 'partial', lines = 3) {
     const feedLines = Math.max(0, Number.parseInt(lines, 10) || 0);
+    if (this.rotate180) {
+      this.groups.at(-1).preCutFeed = feedLines;
+      if (mode !== 'none') this.cutCommand(mode);
+      this.raw(Buffer.alloc(feedLines, LF));
+      return this;
+    }
+
     this.feed(feedLines);
     if (mode !== 'none') this.cutCommand(mode);
     this.feed(feedLines);
@@ -556,7 +568,11 @@ export class EscPosBuilder {
 
   build() {
     if (this.rotate180) {
-      const groups = this.groups.map(({ segments, cut }) => ({ segments: [...segments], cut }));
+      const groups = this.groups.map(({ segments, cut, preCutFeed }) => ({
+        segments: [...segments],
+        cut,
+        preCutFeed
+      }));
       if (this.pageBlock) {
         groups.at(-1).segments.push(this.pageBlock);
       }
@@ -566,8 +582,9 @@ export class EscPosBuilder {
       return Buffer.concat([
         ...this.head,
         Buffer.from([ESC, 0x7b, 1]),
-        ...groups.flatMap(({ segments, cut }) => [
+        ...groups.flatMap(({ segments, cut, preCutFeed }) => [
           ...segments.slice().reverse().flat(),
+          ...(preCutFeed ? [Buffer.alloc(preCutFeed, LF)] : []),
           ...(cut ? [cut] : [])
         ])
       ]);

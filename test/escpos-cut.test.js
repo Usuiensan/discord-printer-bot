@@ -14,6 +14,15 @@ test('cutWithFeed adds exactly three lines before and after an inline cut', () =
   assert.deepEqual([...bytes.subarray(cutIndex + 2, cutIndex + 5)], [0x0a, 0x0a, 0x0a]);
 });
 
+test('cut adds exactly four lines before a non-rotated cut', () => {
+  const printer = new EscPosBuilder();
+  printer.text('A').cut();
+  const bytes = printer.build();
+  const cutIndex = bytes.indexOf(Buffer.from([0x1b, 0x69]));
+
+  assert.deepEqual([...bytes.subarray(cutIndex - 4, cutIndex)], [0x0a, 0x0a, 0x0a, 0x0a]);
+});
+
 test('text threshold conversion does not leak into the following grayscale image', async () => {
   const grayPixel = await sharp({
     create: { width: 1, height: 1, channels: 3, background: { r: 150, g: 150, b: 150 } }
