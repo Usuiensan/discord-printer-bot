@@ -28,6 +28,30 @@ test('rotate180 reverses line segments and keeps the cut at the end', () => {
   assert.deepEqual([...bytes.subarray(-2)], [0x1b, 0x69]);
 });
 
+test('rotate180 puts the standard cut feed immediately before the cut', () => {
+  const printer = new EscPosBuilder({ rotate180: true });
+  printer.line('A').cut();
+  const bytes = printer.build();
+  const cut = Buffer.from([0x1b, 0x69]);
+  const cutIndex = bytes.indexOf(cut);
+  const rotateIndex = bytes.indexOf(Buffer.from([0x1b, 0x7b, 0x01]));
+
+  assert.deepEqual([...bytes.subarray(cutIndex - 4, cutIndex)], [0x0a, 0x0a, 0x0a, 0x0a]);
+  assert.equal(bytes[rotateIndex + 3], 'A'.charCodeAt(0));
+});
+
+test('rotate180 puts standard cut feeds before every inline cut', () => {
+  const printer = new EscPosBuilder({ rotate180: true });
+  printer.line('A').cut().line('B').cut();
+  const bytes = printer.build();
+  const cut = Buffer.from([0x1b, 0x69]);
+  const firstCut = bytes.indexOf(cut);
+  const secondCut = bytes.indexOf(cut, firstCut + cut.length);
+
+  assert.deepEqual([...bytes.subarray(firstCut - 4, firstCut)], [0x0a, 0x0a, 0x0a, 0x0a]);
+  assert.deepEqual([...bytes.subarray(secondCut - 4, secondCut)], [0x0a, 0x0a, 0x0a, 0x0a]);
+});
+
 test('rotate180 keeps state changes with their content segment', () => {
   const printer = new EscPosBuilder({ rotate180: true });
   printer.bold(true).line('X').bold(false).line('Y');
@@ -64,6 +88,18 @@ test('rotate180 keeps cutWithFeed boundaries between their small pages', () => {
   assert.ok(bytes.indexOf(Buffer.from('A')) < firstCut);
   assert.ok(firstCut < bytes.indexOf(Buffer.from('B')));
   assert.ok(bytes.indexOf(Buffer.from('B')) < secondCut);
+});
+
+test('rotate180 keeps cutWithFeed feed after the cut at the next group head', () => {
+  const printer = new EscPosBuilder({ rotate180: true });
+  printer.line('A').cutWithFeed('partial', 2).line('B');
+  const bytes = printer.build();
+  const cut = Buffer.from([0x1b, 0x69]);
+  const cutIndex = bytes.indexOf(cut);
+  const bIndex = bytes.indexOf(Buffer.from('B'));
+
+  assert.deepEqual([...bytes.subarray(cutIndex - 2, cutIndex)], [0x0a, 0x0a]);
+  assert.deepEqual([...bytes.subarray(cutIndex + cut.length, bIndex)], [0x0a, 0x0a]);
 });
 
 test('rotate180 keeps page mode blocks in their original byte order', () => {
