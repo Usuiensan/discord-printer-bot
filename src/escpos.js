@@ -23,9 +23,9 @@ export class EscPosBuilder {
     this.parts = [];
     if (rotate180) {
       this.head = [];
-      this.segments = [];
+      this.groups = [{ segments: [], cut: null }];
       this.pending = [];
-      this.tail = [];
+      this.pageBlock = null;
       this.head.push(Buffer.from([ESC, 0x40]));
       this.head.push(Buffer.from([ESC, 0x33, 24]));
       this.head.push(Buffer.from([ESC, 0x52, 8]));
@@ -40,7 +40,7 @@ export class EscPosBuilder {
 
   raw(buffer) {
     const copy = Buffer.from(buffer);
-    if (this.rotate180) this.pending.push(copy);
+    if (this.rotate180) (this.pageBlock ?? this.pending).push(copy);
     else this.parts.push(copy);
     return this;
   }
@@ -186,8 +186,8 @@ export class EscPosBuilder {
   feed(lines = 1) {
     const count = Math.max(0, lines);
     this.raw(Buffer.alloc(count, LF));
-    if (this.rotate180 && count >= 1) {
-      this.segments.push(this.pending);
+    if (this.rotate180 && count >= 1 && !this.pageBlock) {
+      this.groups.at(-1).segments.push(this.pending);
       this.pending = [];
     }
     return this;
@@ -211,7 +211,16 @@ export class EscPosBuilder {
   }
 
   pageMode(enabled) {
+    if (this.rotate180 && enabled && !this.pageBlock) {
+      this.pageBlock = this.pending;
+      this.pending = [];
+    }
     this.raw(Buffer.from([ESC, enabled ? 0x4c : 0x53]));
+    if (this.rotate180 && !enabled && this.pageBlock) {
+      this.groups.at(-1).segments.push(this.pageBlock);
+      this.pageBlock = null;
+      this.pending = [];
+    }
     return this;
   }
 
@@ -312,7 +321,12 @@ export class EscPosBuilder {
         ? Buffer.from([ESC, 0x6d])
         : Buffer.from([ESC, 0x69]);
     if (this.rotate180) {
-      this.tail.push(command);
+      if (this.pending.length > 0) {
+        this.groups.at(-1).segments.push(this.pending);
+        this.pending = [];
+      }
+      this.groups.at(-1).cut = command;
+      this.groups.push({ segments: [], cut: null });
       return this;
     }
     if (mode === 'full') {
@@ -536,19 +550,26 @@ export class EscPosBuilder {
     const feedLines = Math.max(0, Number.parseInt(lines, 10) || 0);
     this.feed(feedLines);
     if (mode !== 'none') this.cutCommand(mode);
-    if (this.rotate180) this.tail.push(Buffer.alloc(feedLines, LF));
-    else this.feed(feedLines);
+    this.feed(feedLines);
     return this;
   }
 
   build() {
     if (this.rotate180) {
-      const segments = this.pending.length > 0 ? [...this.segments, this.pending] : this.segments;
+      const groups = this.groups.map(({ segments, cut }) => ({ segments: [...segments], cut }));
+      if (this.pageBlock) {
+        groups.at(-1).segments.push(this.pageBlock);
+      }
+      if (this.pending.length > 0) {
+        groups.at(-1).segments.push(this.pending);
+      }
       return Buffer.concat([
         ...this.head,
         Buffer.from([ESC, 0x7b, 1]),
-        ...segments.slice().reverse().flat(),
-        ...this.tail
+        ...groups.flatMap(({ segments, cut }) => [
+          ...segments.slice().reverse().flat(),
+          ...(cut ? [cut] : [])
+        ])
       ]);
     }
     return Buffer.concat(this.parts);

@@ -39,6 +39,49 @@ test('rotate180 keeps state changes with their content segment', () => {
   assert.deepEqual([...bytes.subarray(x - 3, x)], [0x1b, 0x45, 0x01]);
 });
 
+test('rotate180 keeps inline cuts between their small pages', () => {
+  const printer = new EscPosBuilder({ rotate180: true });
+  printer.line('A').cut().line('B').cut();
+  const bytes = printer.build();
+  const cut = Buffer.from([0x1b, 0x69]);
+  const firstCut = bytes.indexOf(cut);
+  const secondCut = bytes.indexOf(cut, firstCut + cut.length);
+
+  assert.ok(bytes.indexOf(Buffer.from('A')) < firstCut);
+  assert.ok(firstCut < bytes.indexOf(Buffer.from('B')));
+  assert.ok(bytes.indexOf(Buffer.from('B')) < secondCut);
+  assert.notEqual(bytes.indexOf(Buffer.from([0x1b, 0x7b, 0x01])), -1);
+});
+
+test('rotate180 keeps cutWithFeed boundaries between their small pages', () => {
+  const printer = new EscPosBuilder({ rotate180: true });
+  printer.line('A').cutWithFeed('partial', 2).line('B').cutWithFeed('partial', 2);
+  const bytes = printer.build();
+  const cut = Buffer.from([0x1b, 0x69]);
+  const firstCut = bytes.indexOf(cut);
+  const secondCut = bytes.indexOf(cut, firstCut + cut.length);
+
+  assert.ok(bytes.indexOf(Buffer.from('A')) < firstCut);
+  assert.ok(firstCut < bytes.indexOf(Buffer.from('B')));
+  assert.ok(bytes.indexOf(Buffer.from('B')) < secondCut);
+});
+
+test('rotate180 keeps page mode blocks in their original byte order', () => {
+  const normal = new EscPosBuilder();
+  normal.line('Y').pageMode(true).text('X').feed(1).pagePrint().pageMode(false);
+  const rotated = new EscPosBuilder({ rotate180: true });
+  rotated.line('Y').pageMode(true).text('X').feed(1).pagePrint().pageMode(false);
+
+  const normalBytes = normal.build();
+  const rotatedBytes = rotated.build();
+  const pageBlockStart = normalBytes.indexOf(Buffer.from([0x1b, 0x4c]));
+  const pageBlock = normalBytes.subarray(pageBlockStart);
+
+  const rotatedPageBlock = rotatedBytes.indexOf(pageBlock);
+  assert.notEqual(rotatedPageBlock, -1);
+  assert.ok(rotatedPageBlock < rotatedBytes.indexOf(Buffer.from('Y')));
+});
+
 test('rotate180 rotates raster pixels before packing them', async () => {
   const image = await sharp({
     create: {
