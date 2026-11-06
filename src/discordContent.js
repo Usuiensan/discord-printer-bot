@@ -2281,10 +2281,10 @@ function formatDiscordMarkdownForPrint(text) {
 
     const subtext = line.match(/^-#\s+(.+)$/);
     if (subtext) {
-      // Subtext (-#) is printed at normal size. News-flash style posts are
-      // often written entirely in subtext, and rendering them in Font B
-      // (small) made the whole print hard to read (user request, 2026-11-06).
-      result.push(subtext[1]);
+      // Subtext (-#) lines print small (Font B), scoped to those lines only.
+      // The rotate180 builder keeps modal state inside each segment, so the
+      // small setting no longer leaks to other lines (PR #18, 2026-11-06).
+      result.push(`\u0000SMALL\u0000${subtext[1]}`);
       continue;
     }
 
