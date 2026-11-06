@@ -23,9 +23,12 @@ export class EscPosBuilder {
     this.parts = [];
     if (rotate180) {
       this.head = [];
-      this.groups = [{ segments: [], cut: null, preCutFeed: 0 }];
+      this.groups = [{ segments: [], states: [], cut: null, preCutFeed: 0 }];
       this.pending = [];
+      this.modalState = modalState(24);
+      this.pendingState = modalState(24);
       this.pageBlock = null;
+      this.pageBlockState = null;
       this.head.push(Buffer.from([ESC, 0x40]));
       this.head.push(Buffer.from([ESC, 0x33, 24]));
       this.head.push(Buffer.from([ESC, 0x52, 8]));
@@ -40,7 +43,10 @@ export class EscPosBuilder {
 
   raw(buffer) {
     const copy = Buffer.from(buffer);
-    if (this.rotate180) (this.pageBlock ?? this.pending).push(copy);
+    if (this.rotate180) {
+      updateModalState(this.modalState, copy);
+      (this.pageBlock ?? this.pending).push(copy);
+    }
     else this.parts.push(copy);
     return this;
   }
@@ -188,7 +194,10 @@ export class EscPosBuilder {
     this.raw(Buffer.alloc(count, LF));
     if (this.rotate180 && count >= 1 && !this.pageBlock) {
       this.groups.at(-1).segments.push(this.pending);
+      this.groups.at(-1).states ??= [];
+      this.groups.at(-1).states.push(this.pendingState);
       this.pending = [];
+      this.pendingState = { ...this.modalState };
     }
     return this;
   }
@@ -213,13 +222,19 @@ export class EscPosBuilder {
   pageMode(enabled) {
     if (this.rotate180 && enabled && !this.pageBlock) {
       this.pageBlock = this.pending;
+      this.pageBlockState = this.pendingState;
       this.pending = [];
+      this.pendingState = { ...this.modalState };
     }
     this.raw(Buffer.from([ESC, enabled ? 0x4c : 0x53]));
     if (this.rotate180 && !enabled && this.pageBlock) {
       this.groups.at(-1).segments.push(this.pageBlock);
+      this.groups.at(-1).states ??= [];
+      this.groups.at(-1).states.push(this.pageBlockState);
       this.pageBlock = null;
+      this.pageBlockState = null;
       this.pending = [];
+      this.pendingState = { ...this.modalState };
     }
     return this;
   }
@@ -328,10 +343,13 @@ export class EscPosBuilder {
     if (this.rotate180) {
       if (this.pending.length > 0) {
         this.groups.at(-1).segments.push(this.pending);
+        this.groups.at(-1).states ??= [];
+        this.groups.at(-1).states.push(this.pendingState);
         this.pending = [];
+        this.pendingState = { ...this.modalState };
       }
       this.groups.at(-1).cut = command;
-      this.groups.push({ segments: [], cut: null, preCutFeed: 0 });
+      this.groups.push({ segments: [], states: [], cut: null, preCutFeed: 0 });
       return this;
     }
     if (mode === 'full') {
@@ -568,22 +586,28 @@ export class EscPosBuilder {
 
   build() {
     if (this.rotate180) {
-      const groups = this.groups.map(({ segments, cut, preCutFeed }) => ({
+      const groups = this.groups.map(({ segments, states, cut, preCutFeed }) => ({
         segments: [...segments],
+        states: [...states],
         cut,
         preCutFeed
       }));
       if (this.pageBlock) {
         groups.at(-1).segments.push(this.pageBlock);
+        groups.at(-1).states.push(this.pageBlockState);
       }
       if (this.pending.length > 0) {
         groups.at(-1).segments.push(this.pending);
+        groups.at(-1).states.push(this.pendingState);
       }
       return Buffer.concat([
         ...this.head,
         Buffer.from([ESC, 0x7b, 1]),
-        ...groups.flatMap(({ segments, cut, preCutFeed }) => [
-          ...segments.slice().reverse().flat(),
+        ...groups.flatMap(({ segments, states, cut, preCutFeed }) => [
+          ...segments.slice().reverse().flatMap((segment, index) => [
+            ...modalPreamble(states[segments.length - 1 - index]),
+            ...segment
+          ]),
           ...(preCutFeed ? [Buffer.alloc(preCutFeed, LF)] : []),
           ...(cut ? [cut] : [])
         ])
@@ -594,6 +618,70 @@ export class EscPosBuilder {
 }
 
 const CAN = 0x18;
+
+function modalState(lineSpacing) {
+  return {
+    font: 0,
+    bold: 0,
+    underline: 0,
+    invert: 0,
+    rotate90: 0,
+    smoothing: 0,
+    charSpacing: 0,
+    align: 0,
+    lineSpacing,
+    sizeMagW: 1,
+    sizeMagH: 1
+  };
+}
+
+function updateModalState(state, buffer) {
+  if (buffer.length === 2 && buffer[0] === ESC) {
+    if (buffer[1] === 0x40) Object.assign(state, modalState('default'));
+    if (buffer[1] === 0x32) state.lineSpacing = 'default';
+  } else if (buffer.length === 3 && buffer[0] === ESC) {
+    const value = buffer[2];
+    if (buffer[1] === 0x4d) state.font = value;
+    if (buffer[1] === 0x45) state.bold = value;
+    if (buffer[1] === 0x2d) state.underline = value;
+    if (buffer[1] === 0x21) {
+      state.font = value & 1;
+      state.bold = (value >> 3) & 1;
+      state.underline = (value >> 7) & 1;
+      state.sizeMagW = value & 0x20 ? 2 : 1;
+      state.sizeMagH = value & 0x10 ? 2 : 1;
+    }
+    if (buffer[1] === 0x61) state.align = value;
+    if (buffer[1] === 0x33) state.lineSpacing = value;
+    if (buffer[1] === 0x20) state.charSpacing = value;
+    if (buffer[1] === 0x56) state.rotate90 = value;
+    if (buffer[1] === 0x32) state.lineSpacing = 'default';
+  } else if (buffer.length === 3 && buffer[0] === GS) {
+    if (buffer[1] === 0x42) state.invert = buffer[2];
+    if (buffer[1] === 0x62) state.smoothing = buffer[2];
+    if (buffer[1] === 0x21) {
+      state.sizeMagW = ((buffer[2] >> 4) & 7) + 1;
+      state.sizeMagH = (buffer[2] & 7) + 1;
+    }
+  }
+}
+
+function modalPreamble(state) {
+  return [
+    state.lineSpacing === 'default'
+      ? Buffer.from([ESC, 0x32])
+      : Buffer.from([ESC, 0x33, state.lineSpacing]),
+    Buffer.from([ESC, 0x20, state.charSpacing]),
+    Buffer.from([ESC, 0x61, state.align]),
+    Buffer.from([ESC, 0x4d, state.font]),
+    Buffer.from([ESC, 0x45, state.bold]),
+    Buffer.from([ESC, 0x2d, state.underline]),
+    Buffer.from([GS, 0x42, state.invert]),
+    Buffer.from([ESC, 0x56, state.rotate90]),
+    Buffer.from([GS, 0x62, state.smoothing]),
+    Buffer.from([GS, 0x21, ((state.sizeMagW - 1) << 4) | (state.sizeMagH - 1)])
+  ];
+}
 
 function clampByte(value) {
   const number = Number.parseInt(value, 10);
