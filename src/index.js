@@ -29,6 +29,7 @@ import {
 import { checkPrinterProblems, isPrintInProgress, repairPrinterConnection, sendRawToPrinter, verifyPrinterCanBeEjected } from './printer.js';
 import { startPrintServer } from './printServer.js';
 import { createPrinterMonitorTracker, shouldPausePrinterMonitor } from './printerMonitor.js';
+import { createPrintBatcher } from './printBatcher.js';
 import { isOwnBotMessage } from './messageFilters.js';
 import { withErrorMention, withSilentFlags } from './discordMessageOptions.js';
 import { acknowledgeSlotInteraction, buildSlotMessage, drawSlot } from './slot.js';
@@ -74,6 +75,12 @@ const aiChatQueues = new Map();
 const activeAiJobs = new Map();
 const aiDeepRetryContexts = new Map();
 const watchedChannelIds = new Set(config.channelIds ?? [config.channelId]);
+const printBatcher = createPrintBatcher({
+  quietMs: config.printMergeQuietMs,
+  maxMs: config.printMergeMaxMs,
+  maxMessages: config.printMergeMaxMessages,
+  onFlush: (messages) => enqueuePrintBatch(messages)
+});
 
 function enqueuePrint(message) {
   enqueuePrintJob(message, 'message', async () => {
@@ -124,6 +131,77 @@ function enqueuePrint(message) {
       console.log(`Printed message ${message.id} from ${message.author.tag}`);
     }
   });
+}
+
+function enqueuePrintBatch(messages) {
+  const firstMessage = messages[0];
+  enqueuePrintJob(firstMessage, 'message-batch', async () => {
+    const jobs = [];
+    let printNumber = null;
+    const firstTemplateOptions = parsePrintTemplateOptions(firstMessage.content ?? '', config.messageCommandPrefix);
+    const firstOmitHeader = firstTemplateOptions.omitHeader || shouldOmitHeader(firstMessage);
+    if (!firstOmitHeader) printNumber = await peekNextPrintNumber();
+
+    for (const [index, message] of messages.entries()) {
+      const templateOptions = parsePrintTemplateOptions(message.content ?? '', config.messageCommandPrefix);
+      const omitHeader = index > 0 || templateOptions.omitHeader || shouldOmitHeader(message);
+      const job = await buildPrintJob(message, config, {
+        printHeader: !omitHeader,
+        omitHeader,
+        omitCut: index < messages.length - 1,
+        printNumber: index === 0 ? printNumber : null
+      });
+      jobs.push({ message, job });
+    }
+
+    let retryNotified = false;
+    await sendRawToPrinter(
+      Buffer.concat(jobs.map(({ job }) => job.bytes)),
+      config.printerName,
+      {
+        ...config,
+        onRetry: async (retry) => {
+          if (retryNotified) return;
+          retryNotified = true;
+          for (const { message } of jobs) await markPrintRetry(message, retry);
+        }
+      }
+    );
+
+    const firstJob = jobs[0]?.job;
+    if (printNumber && (firstJob?.usesPrintNumber ?? true)) await commitPrintNumber(printNumber);
+    if (jobs.some(({ job }) => job.updatesMergeState ?? true)) {
+      const lastMessage = jobs.at(-1).message;
+      lastPrintedMessage = {
+        authorId: lastMessage.author.id,
+        channelId: lastMessage.channelId,
+        createdTimestamp: lastMessage.createdTimestamp
+      };
+    }
+
+    for (const { message, job } of jobs) {
+      if (job.warnings.length > 0) {
+        await markPrintWarning(message, job.warnings, job.printImages ?? []);
+      } else {
+        await markPrintSuccess(message, hasNearEndWarning());
+      }
+      console.log(`Printed message ${message.id} from ${message.author.tag}`);
+    }
+  }, {
+    onFailure: async (error) => {
+      for (const message of messages) await markPrintFailure(message, error.message);
+    }
+  });
+}
+
+function enqueueMessagePrint(message) {
+  const templateOptions = parsePrintTemplateOptions(message.content ?? '', config.messageCommandPrefix);
+  if (templateOptions.copies > 1) {
+    printBatcher.flush(message);
+    enqueuePrint(message);
+    return;
+  }
+  printBatcher.add(message);
 }
 
 function enqueueMemberJoinPrint(member) {
@@ -487,7 +565,7 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  enqueuePrint(message);
+  enqueueMessagePrint(message);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {

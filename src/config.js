@@ -25,6 +25,16 @@ function intEnv(name, fallback) {
   return value;
 }
 
+function nonNegativeIntEnv(name, fallback) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return value;
+}
+
 function optionalEnv(name, fallback) {
   const value = process.env[name]?.trim();
   return value || fallback;
@@ -100,6 +110,9 @@ export const config = {
   cutMode: optionalEnv('CUT_MODE', boolEnv('CUT_AFTER_PRINT', true) ? 'partial' : 'none'),
   printHeader: boolEnv('PRINT_HEADER', true),
   mergeSameUserWindowMs: intEnv('MERGE_SAME_USER_WINDOW_MS', 3000),
+  printMergeQuietMs: nonNegativeIntEnv('PRINT_MERGE_QUIET_MS', 5000),
+  printMergeMaxMs: intEnv('PRINT_MERGE_MAX_MS', 30000),
+  printMergeMaxMessages: intEnv('PRINT_MERGE_MAX_MESSAGES', 10),
   printAuthorAvatar: boolEnv('PRINT_AUTHOR_AVATAR', true),
   authorAvatarWidthDots: intEnv('AUTHOR_AVATAR_WIDTH_DOTS', 96),
   printFontPath: optionalEnv('PRINT_FONT_PATH', ''),
