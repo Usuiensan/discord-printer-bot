@@ -85,7 +85,7 @@ export async function buildPrintJob(message, config, options = {}) {
   };
   const noteCommand = parseNoteMessageCommand(printableMessage.content, config.messageCommandPrefix);
   if (noteCommand) {
-    return buildNotePrintJob(noteCommand, config);
+    return buildNotePrintJob(noteCommand, config, options);
   }
 
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
@@ -106,7 +106,7 @@ export async function buildPrintJob(message, config, options = {}) {
     const jobConfig = imageModeConfig(config, unsupportedChars);
     if (unsupportedChars.length > 0) warnings.push(imageModeWarning(unsupportedChars));
     await appendReceiptLine(printer, receiptLineDocument, jobConfig, warnings, { textPrintImages });
-    printer.cut(config.cutMode);
+    if (options.omitCut !== true) printer.cut(config.cutMode);
     return {
       bytes: printer.build(),
       warnings,
@@ -156,7 +156,7 @@ export async function buildPrintJob(message, config, options = {}) {
     printTextLine(printer, '[印刷できる本文がありません]', warnings);
   }
 
-  printer.cut(config.cutMode);
+  if (options.omitCut !== true) printer.cut(config.cutMode);
 
   return {
     bytes: printer.build(),
@@ -191,7 +191,7 @@ export function parseNoteMessageCommand(content, prefix = '!') {
   };
 }
 
-async function buildNotePrintJob(noteCommand, config) {
+async function buildNotePrintJob(noteCommand, config, options = {}) {
   const printer = new EscPosBuilder({ widthDots: config.printWidthDots, rotate180: config.printRotate180 });
   const printImages = [];
   const segments = splitNoteCutCommands(noteCommand.text);
@@ -212,7 +212,7 @@ async function buildNotePrintJob(noteCommand, config) {
       printer.cutWithFeed(segment.cutMode, config.cutFeedLines ?? 3);
     }
   }
-  printer.cut(config.cutMode);
+  if (options.omitCut !== true) printer.cut(config.cutMode);
 
   return {
     bytes: printer.build(),
